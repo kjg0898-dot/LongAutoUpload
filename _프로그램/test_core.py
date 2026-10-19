@@ -42,6 +42,91 @@ def test_memo():
     assert core.parse_memo("설명하자면 이렇다") == {}  # 낱말이 머리말로 오인되지 않게
 
 
+SEO = """============================================================
+[2026-10-17 21:19] 행 2 | 순번 1 | 제목: 원본 제목 하나
+============================================================
+
+▣ 채널 판별: [역사]
+>> 원본 제목: [원본 제목 하나]
+---
+제목 (3안)
+1. 첫째 후보
+2. 둘째 후보
+3. 셋째 후보
+추천 1순위: 2 — 이유
+---
+썸네일 문구 (3안)
+1. 문구
+추천 1순위: 1 — 이유
+---
+설명글 & 해시태그
+설명 본문입니다.
+
+참고자료
+· 책
+
+#역사 #동양사
+---
+고정 댓글
+고마워요 ❤️
+둘째 줄
+---
+영상 프롬프트
+[시퀀스 1]
+============================================================
+[2026-10-17 21:35] 행 3 | 순번 2 | 제목: 원본 둘
+============================================================
+---
+제목 (3안)
+1. 두 번째 영상 제목
+---
+설명글 & 해시태그
+둘째 설명
+---
+고정 댓글
+둘째 댓글
+"""
+
+
+def test_seo():
+    a, b = core.parse_seo(SEO.replace("\n", "\r\n"))
+    assert a == {"num": 1, "orig": "원본 제목 하나", "titles": ["첫째 후보", "둘째 후보", "셋째 후보"],
+                 "title": "둘째 후보", "desc": "설명 본문입니다.\n\n참고자료\n· 책\n\n#역사 #동양사",
+                 "tags": "#역사 #동양사", "comment": "고마워요 ❤️\n둘째 줄"}, a
+    assert (b["num"], b["title"], b["comment"], b["tags"]) == (2, "두 번째 영상 제목", "둘째 댓글", "")
+    assert core.parse_seo("제목: 일반 메모장") == []
+
+
+def test_seo_batch_folder():
+    """실제 폴더 모양: 영상/채널/1/{seo,썸네일,중국}/... — 번호로 짝짓고 묶음 폴더째 완료로."""
+    with tempfile.TemporaryDirectory() as d:
+        core.VIDEO_DIR, core.DONE_DIR = Path(d) / "영상", Path(d) / "완료"
+        b = core.VIDEO_DIR / "동양사" / "1"
+        for sub in ("seo", "썸네일", "중국", "대본"):
+            (b / sub).mkdir(parents=True)
+        (b / "seo" / "20261017_seo.txt").write_text(SEO, "utf-8")
+        (b / "대본" / "1.txt").write_text("대본은 메모장이 아님", "utf-8")
+        for n in (1, 2):
+            (b / "중국" / f"숨겨진동양사이야기_{n}_내보내기.mp4").write_bytes(b"v")
+            (b / "썸네일" / f"썸네일{n}.png").write_bytes(b"i")
+        old = core.VIDEO_DIR / "동양사" / "0"  # 지난 묶음: 같은 번호가 있어도 섞이면 안 됨
+        old.mkdir()
+        (old / "숨겨진동양사이야기_1_내보내기.mp4").write_bytes(b"v")
+        cfg = {"channels": [{**core.DEFAULT_CHANNEL, "name": "동양사", "folder": "동양사"}]}
+        rows, problems = core.build_rows(cfg, [])
+        new = [r for r in rows if r["파일"].startswith("동양사/1/")]
+        assert [(r["제목"], r["썸네일"].split("/")[-1], r["고정댓글"]) for r in new] == [
+            ("둘째 후보", "썸네일1.png", "고마워요 ❤️\n둘째 줄"), ("두 번째 영상 제목", "썸네일2.png", "둘째 댓글")], new
+        assert new[0]["제목후보"] == "1. 첫째 후보\n2. 둘째 후보\n3. 셋째 후보"
+        assert any(r["파일"].startswith("동양사/0/") for r in rows) and len(problems) == 2  # 지난 묶음은 메모장·썸네일 없음
+
+        core.move_done(new[0])
+        assert (b / "seo" / "20261017_seo.txt").exists()  # 영상이 남아 있으면 메모장은 그대로
+        core.move_done(new[1])
+        assert not b.exists() and (core.DONE_DIR / "동양사" / "1" / "대본" / "1.txt").exists()
+        assert len(list((core.DONE_DIR / "동양사" / "1").rglob("*.*"))) == 6
+
+
 def test_slots():
     slots = core.parse_slots("월 18:00, 수요일 18:00, 금 20:30")
     assert slots == [(0, 18, 0), (2, 18, 0), (4, 20, 30)]
@@ -78,16 +163,16 @@ def test_scan_and_build():
         for name in ("영상.mp4", "info.txt", "cover.jpg"):  # 영상마다 폴더가 따로 있는 경우
             (a / "02_사랑" / name).write_bytes(b"x")
         pairs = core.scan_channel(a)
-        assert [(v.name, m and m.name, t and t.name) for v, m, t in pairs] == [
+        assert [(v.name, m and m["src"].name, t and t.name) for v, m, t in pairs] == [
             ("1_시작.mp4", "1_시작 메모.txt", "1_시작_썸네일.png"),
-            ("영상.mp4", "info.txt", "cover.jpg"),
+            ("영상.mp4", None, "cover.jpg"),  # 내용 없는 메모장은 짝으로 치지 않는다
             ("10_끝.mp4", "10_끝.txt", "10_끝.jpg")], pairs
 
         cfg = {"channels": [{**core.DEFAULT_CHANNEL, "name": "명언", "folder": "명언채널", "members": True}]}
         rows, problems = core.build_rows(cfg, [])
         assert [r["회원우선"] for r in rows] == ["", "", "O"]
         assert rows[0]["제목"] == "시작" and rows[0]["태그"] == "명언" and rows[2]["제목"] == "끝"
-        assert any("info.txt" in p for p in problems)  # 빈 메모장은 확인 필요로 알린다
+        assert any("영상.mp4" in p and "메모장" in p for p in problems)  # 빈 메모장은 확인 필요로 알린다
         rows[0]["제목"] = "고친 제목"
         again, _ = core.build_rows(cfg, rows)
         assert again[0]["제목"] == "고친 제목"  # 다시 만들어도 사용자가 고친 칸은 그대로

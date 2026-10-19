@@ -1,4 +1,5 @@
 """YouTube Data API 호출. 공식 API만 쓴다."""
+import time
 from datetime import datetime, timezone
 
 from core import PROG, parse_dt
@@ -83,7 +84,12 @@ def recent_videos(yt, limit=200):
 
 
 def by_filename(videos):
-    return {v.get("fileDetails", {}).get("fileName", "").lower(): v for v in videos}
+    """원본 파일 이름 → 영상. 묶음마다 파일 이름이 같을 수 있어서 아직 공개·예약 전인 것 중 가장 최근 것."""
+    out = {}
+    for v in sorted(videos, key=lambda v: v["snippet"].get("publishedAt", "")):
+        if v["status"].get("privacyStatus") != "public" and not v["status"].get("publishAt"):
+            out[v.get("fileDetails", {}).get("fileName", "").lower()] = v
+    return out
 
 
 def last_scheduled(videos):
@@ -106,7 +112,18 @@ def update_video(yt, video, snippet=None, status=None):
         if body["status"].get("privacyStatus") != "private":
             body["status"].pop("publishAt", None)  # 예약 시간은 비공개일 때만 둘 수 있다
         parts.append("status")
-    return yt.videos().update(part=",".join(parts), body=body).execute()
+    return execute(yt.videos().update(part=",".join(parts), body=body))
+
+
+def execute(request, waits=(3, 10, 30)):
+    """같은 영상을 연달아 고치면 409(conflict)가 나므로 잠깐 기다렸다 다시 보낸다."""
+    for wait in (*waits, None):
+        try:
+            return request.execute()
+        except Exception as e:
+            if wait is None or getattr(getattr(e, "resp", None), "status", None) not in (409, 500, 503):
+                raise
+            time.sleep(wait)
 
 
 def set_thumbnail(yt, video_id, path):

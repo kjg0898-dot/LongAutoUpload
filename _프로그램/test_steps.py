@@ -22,7 +22,7 @@ class FakeYouTube:
     def __init__(self, files):
         self.videos_db = {f"vid{i}": {
             "id": f"vid{i}", "fileDetails": {"fileName": f},
-            "snippet": {"title": "【명언】 | 내채널", "description": "구독 부탁", "tags": ["기본"],
+            "snippet": {"title": "[숨겨진 동양사]   l 역사 인물 l 고전 | 수면오디오북", "description": "구독 부탁", "tags": ["기본"],
                         "categoryId": "22", "channelId": "UC1", "thumbnails": {}},
             "status": {"privacyStatus": "private", "uploadStatus": "processed", "madeForKids": False,
                        "selfDeclaredMadeForKids": False}} for i, f in enumerate(files)}
@@ -125,7 +125,7 @@ def test_full_flow():
         assert [r["상태"] for r in rows] == ["댓글완료", "정보완료", "댓글완료"], rows
         assert "commentsDisabled" in rows[1]["오류"]
         v0 = fake.videos_db["vid0"]
-        assert v0["snippet"]["title"] == "【명언】 고친 명언 1 | 내채널"
+        assert v0["snippet"]["title"] == "[숨겨진 동양사] 고친 명언 1 l 역사 인물 l 고전 | 수면오디오북"
         assert v0["snippet"]["description"] == "본문 1\n\n구독 부탁"
         assert v0["snippet"]["tags"] == ["기본", "명언", "새태그"]
         assert v0["status"]["privacyStatus"] == "unlisted"
@@ -133,7 +133,7 @@ def test_full_flow():
 
         fake.fail_comment_for = set()
         steps.fill_all(ui)  # 실패한 것만 이어서: 제목이 두 번 들어가지 않아야 한다
-        assert fake.videos_db["vid1"]["snippet"]["title"] == "【명언】 명언 2 | 내채널"
+        assert fake.videos_db["vid1"]["snippet"]["title"] == "[숨겨진 동양사] 명언 2 l 역사 인물 l 고전 | 수면오디오북"
         assert sorted(c[0] for c in fake.comments) == ["vid0", "vid1", "vid2"]
 
         targets = steps.pin_targets(core.read_rows(), core.load_config())

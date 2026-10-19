@@ -106,10 +106,11 @@ def fill_all(ui):
         if not todo or not (client := _client(ui, ch)):
             continue
         ui.log(f"[{ch['name']}] {len(todo)}개 처리 시작")
-        videos = yt.by_filename(yt.recent_videos(client))
+        recent = yt.recent_videos(client)
+        by_id, by_name = {v["id"]: v for v in recent}, yt.by_filename(recent)
 
         def work(r):
-            video = videos.get(Path(r["파일"]).name.lower())
+            video = by_id.get(r["영상ID"]) if r["영상ID"] else by_name.get(Path(r["파일"]).name.lower())
             if not video:
                 raise LookupError("Studio에서 이 파일의 초안을 못 찾았습니다 (업로드가 끝났는지 확인)")
             r["영상ID"] = video["id"]

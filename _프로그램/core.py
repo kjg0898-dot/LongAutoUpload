@@ -28,8 +28,8 @@ LANGUAGES = {"한국어": "ko", "영어": "en", "일본어": "ja", "중국어": 
 
 DEFAULT_CHANNEL = {
     "name": "", "folder": "", "ypp": False, "members": False, "slots": "월 18:00, 수 18:00, 금 18:00",
-    # shortcut: 넣는 자리는 실제 초안 틀을 보기 전의 추정값, 샘플을 받으면 기본값을 맞춘다
-    "title_mode": "기준 글자 앞", "title_marker": "|",
+    # 초안 제목 틀이 "[채널명]  l 역사 인물 l ..." 꼴이라 "]" 바로 뒤에 넣는다
+    "title_mode": "기준 글자 뒤", "title_marker": "]",
     "desc_mode": "맨 앞", "desc_marker": "",
     "tags_mode": "뒤에 추가", "playlist": "",
     "category": KEEP, "language": KEEP, "synthetic": KEEP, "kids": KEEP,
@@ -38,7 +38,7 @@ DEFAULT_CHANNEL = {
 }
 DEFAULT_CONFIG = {"channels": [], "max_fails": 3, "mode": "한 번에 전체"}
 
-COLUMNS = ["채널", "파일", "제목", "설명", "태그", "고정댓글", "메모장", "썸네일",
+COLUMNS = ["채널", "파일", "제목", "제목후보", "설명", "태그", "고정댓글", "메모장", "썸네일",
            "회원우선", "예약일시", "상태", "오류", "영상ID"]
 
 
@@ -113,6 +113,49 @@ def parse_memo(text):
     return out
 
 
+# SEO 메모장: 영상 여러 개가 "[날짜] 행 N | 순번 N | 제목: 원본 제목" 블록으로 이어지고, 블록 안은 --- 로 구역이 나뉜다
+_SEO_HEAD = re.compile(r"^\[\d{4}-\d\d-\d\d[^\]]*\]\s*행\s*\d+\s*\|\s*순번\s*(\d+)\s*\|\s*제목:\s*(.*)$")
+
+
+def parse_seo(text):
+    blocks = []
+    for line in text.splitlines():
+        m = _SEO_HEAD.match(line.strip())
+        if m:
+            blocks.append((int(m[1]), m[2].strip(), []))
+        elif blocks and not re.fullmatch(r"=+", line.strip()):
+            blocks[-1][2].append(line)
+    out = []
+    for num, orig, lines in blocks:
+        sections = {}
+        for chunk in re.split(r"^---\s*$", "\n".join(lines), flags=re.M):
+            head, _, body = chunk.strip().partition("\n")
+            sections[head.strip()] = body.strip()
+
+        def find(word):
+            return next((v for k, v in sections.items() if k.startswith(word)), "")
+        titles = re.findall(r"^\s*\d+\.\s*(.+?)\s*$", find("제목"), re.M)
+        rec = re.search(r"추천\s*1순위:\s*(\d+)", find("제목"))
+        pick = int(rec[1]) - 1 if rec and 0 < int(rec[1]) <= len(titles) else 0
+        desc = find("설명")
+        out.append({"num": num, "orig": orig, "titles": titles, "title": titles[pick] if titles else orig,
+                    "desc": desc, "tags": " ".join(re.findall(r"#\S+", desc)), "comment": find("고정")})
+    return out
+
+
+def load_entries(memo_paths):
+    """메모장들 → 영상 하나당 항목 하나. SEO 형식이면 한 파일에 여러 항목."""
+    entries = []
+    for path in memo_paths:
+        text = read_text(path)
+        seo = parse_seo(text)
+        if seo:
+            entries += [e | {"src": path} for e in seo]
+        elif info := parse_memo(text):
+            entries.append({"num": None, "orig": "", "titles": []} | info | {"src": path})
+    return entries
+
+
 def parse_tags(text):
     return [t.strip() for t in re.split(r"[,\n#]+", text or "") if t.strip()]
 
@@ -176,8 +219,13 @@ def _norm(stem):
     return re.sub(r"[\W_]", "", stem)
 
 
-def _similar(a, b):
-    return difflib.SequenceMatcher(None, _norm(a.stem), _norm(b.stem)).ratio()
+def _sim(a, b):
+    return difflib.SequenceMatcher(None, _norm(a), _norm(b)).ratio() if _norm(a) and _norm(b) else 0
+
+
+def _nums(path):
+    """파일 이름 속 번호 (예: 숨겨진동양사이야기_6_내보내기 → {6}). 날짜 같은 큰 숫자는 뺀다."""
+    return {int(n) for n in re.findall(r"\d+", Path(path).stem) if int(n) < 1000}
 
 
 def _find_pair(video, candidates, videos):
@@ -187,21 +235,67 @@ def _find_pair(video, candidates, videos):
             return c
     if len(same_dir) == 1 and sum(v.parent == video.parent for v in videos) == 1:
         return same_dir[0]  # 영상마다 폴더가 따로 있는 경우
-    best = max(candidates, key=lambda c: _similar(c, video), default=None)
-    return best if best and _similar(best, video) >= 0.6 else None
+    best = max(candidates, key=lambda c: _sim(c.stem, video.stem), default=None)
+    return best if best and _sim(best.stem, video.stem) >= 0.6 else None
+
+
+def _by_number(num, items, key):
+    hits = [i for i in items if key(i) == {num}]
+    return hits[0] if num is not None and len(hits) == 1 else None
+
+
+def _match_entry(video, entries, videos):
+    simple = [e for e in entries if e["num"] is None]
+    src = _find_pair(video, [e["src"] for e in simple], videos)
+    if src:
+        return next(e for e in simple if e["src"] == src)
+    nums = _nums(video)
+    if hit := _by_number(next(iter(nums)) if len(nums) == 1 else None, entries, lambda e: {e["num"]}):
+        return hit
+    score = lambda e: max(_sim(video.stem, t) for t in [e["orig"], e["title"], *e["titles"]])  # noqa: E731
+    best = max(entries, key=score, default=None)
+    return best if best and score(best) >= 0.6 else None
+
+
+def _match_thumb(video, entry, images, videos):
+    same = [i for i in images if i.stem.lower() == video.stem.lower()]
+    if same:
+        return same[0]
+    nums = _nums(video)
+    num = entry["num"] if entry and entry["num"] is not None else (next(iter(nums)) if len(nums) == 1 else None)
+    if hit := _by_number(num, images, _nums):
+        return hit
+    if entry:  # 썸네일 이름이 제목으로 돼 있는 경우
+        score = lambda i: max(_sim(i.stem, t) for t in [entry["orig"], entry["title"], *entry["titles"]])  # noqa: E731
+        best = max(images, key=score, default=None)
+        if best and score(best) >= 0.6:
+            return best
+    return _find_pair(video, images, videos)
+
+
+def _unit(path, folder):
+    """묶음 단위: 채널 폴더 바로 아래 폴더(예: 영상/채널/1). 채널 폴더에 바로 있으면 채널 폴더."""
+    parts = Path(path).relative_to(folder).parts
+    return Path(folder) / parts[0] if len(parts) > 1 else Path(folder)
 
 
 def scan_channel(folder):
-    """[(영상, 메모장 또는 None, 썸네일 또는 None)] — 파일 이름 순서."""
+    """[(영상, 메모장 항목 또는 None, 썸네일 또는 None)] — 묶음 폴더 안에서만 짝을 찾고, 파일 이름 순서."""
     files = [p for p in Path(folder).rglob("*") if p.is_file()]
     videos = sorted((p for p in files if p.suffix.lower() in VIDEO_EXT), key=natural_key)
-    memos = [p for p in files if p.suffix.lower() == ".txt"]
+    entries = load_entries(p for p in files if p.suffix.lower() == ".txt")
     images = [p for p in files if p.suffix.lower() in IMAGE_EXT]
-    pairs = [[v, _find_pair(v, memos, videos), _find_pair(v, images, videos)] for v in videos]
-    for col in (1, 2):  # 한 파일이 두 영상에 짝지어지면 둘 다 확인 필요로 돌린다
-        used = [p[col] for p in pairs if p[col]]
+    pairs = []
+    for v in videos:
+        unit = _unit(v, folder)
+        same = lambda p: _unit(p, folder) == unit  # noqa: E731
+        vids = [x for x in videos if same(x)]
+        entry = _match_entry(v, [e for e in entries if same(e["src"])], vids)
+        pairs.append([v, entry, _match_thumb(v, entry, [i for i in images if same(i)], vids)])
+    for col in (1, 2):  # 한 메모장 항목·썸네일이 두 영상에 짝지어지면 둘 다 확인 필요로 돌린다
+        used = [id(p[col]) for p in pairs if p[col]]
         for p in pairs:
-            if p[col] and used.count(p[col]) > 1:
+            if p[col] and used.count(id(p[col])) > 1:
                 p[col] = None
     return [tuple(p) for p in pairs]
 
@@ -272,24 +366,23 @@ def build_rows(cfg, old_rows):
         folder = VIDEO_DIR / ch["folder"]
         folder.mkdir(parents=True, exist_ok=True)
         added = []
-        for video, memo, thumb in scan_channel(folder):
+        for video, entry, thumb in scan_channel(folder):
             name = rel(video)
             if name in old:
                 rows.append(old[name])
                 continue
-            info = parse_memo(read_text(memo)) if memo else {}
-            if not memo:
-                problems.append(f"{name}: 메모장을 못 찾음")
-            elif not info:
-                problems.append(f"{name}: 메모장에서 제목·설명 등을 못 읽음 ({memo.name})")
+            info = entry or {}
+            if not entry:
+                problems.append(f"{name}: 메모장(SEO) 내용을 못 찾음")
             if not thumb:
                 problems.append(f"{name}: 썸네일을 못 찾음")
             elif thumb.stat().st_size > THUMB_MAX:
                 problems.append(f"{name}: 썸네일이 2MB를 넘음 ({thumb.name})")
             row = dict.fromkeys(COLUMNS, "") | {
-                "채널": ch["name"], "파일": name, "제목": info.get("title", ""), "설명": info.get("desc", ""),
-                "태그": info.get("tags", ""), "고정댓글": info.get("comment", ""),
-                "메모장": rel(memo), "썸네일": rel(thumb)}
+                "채널": ch["name"], "파일": name, "제목": info.get("title", ""),
+                "제목후보": "\n".join(f"{i}. {t}" for i, t in enumerate(info.get("titles", []), 1)),
+                "설명": info.get("desc", ""), "태그": info.get("tags", ""), "고정댓글": info.get("comment", ""),
+                "메모장": rel(info.get("src")), "썸네일": rel(thumb)}
             rows.append(row)
             added.append(row)
         if ch["members"] and added and not any(r["회원우선"] for r in rows if r["채널"] == ch["name"]):
@@ -324,7 +417,7 @@ def write_rows(rows):
     ws.append(COLUMNS)
     for r in rows:
         ws.append([r.get(c, "") for c in COLUMNS])
-    widths = {"채널": 12, "파일": 30, "제목": 45, "설명": 40, "태그": 25, "고정댓글": 30, "메모장": 20,
+    widths = {"채널": 12, "파일": 30, "제목": 45, "제목후보": 45, "설명": 40, "태그": 25, "고정댓글": 30, "메모장": 20,
               "썸네일": 20, "회원우선": 9, "예약일시": 17, "상태": 12, "오류": 30, "영상ID": 14}
     edit = PatternFill("solid", fgColor="FFF2CC")  # 사용자가 고치는 칸
     for i, col in enumerate(COLUMNS, 1):
@@ -332,7 +425,7 @@ def write_rows(rows):
         ws.column_dimensions[letter].width = widths[col]
         ws.cell(1, i).font = Font(bold=True)
         for cell in ws[letter][1:]:
-            cell.alignment = Alignment(wrap_text=col in ("설명", "고정댓글", "오류"), vertical="top")
+            cell.alignment = Alignment(wrap_text=col in ("제목후보", "설명", "고정댓글", "오류"), vertical="top")
             if col in ("제목", "회원우선", "예약일시"):
                 cell.fill = edit
     ws.freeze_panes = "C2"
@@ -343,15 +436,33 @@ def write_rows(rows):
 
 
 # ---------- 완료 ----------
+def _move(relpath):
+    src = VIDEO_DIR / relpath
+    if not relpath or not src.exists():
+        return
+    dst = DONE_DIR / relpath
+    n = 1
+    while dst.exists():  # 같은 이름이 이미 있으면 덮어쓰지 않는다
+        dst = dst.with_stem(f"{Path(relpath).stem} ({n})")
+        n += 1
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(src, dst)
+
+
 def move_done(row):
-    for key in ("파일", "메모장", "썸네일"):
-        src = VIDEO_DIR / row[key] if row.get(key) else None
-        if not src or not src.exists():
-            continue
-        dst = DONE_DIR / row[key]
-        n = 1
-        while dst.exists():  # 같은 이름이 이미 있으면 덮어쓰지 않는다
-            dst = dst.with_stem(f"{Path(row[key]).stem} ({n})")
-            n += 1
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(src, dst)
+    """영상·썸네일을 완료/로. 묶음 폴더에 영상이 하나도 안 남으면 나머지(메모장·대본 등)도 통째로."""
+    _move(row["파일"])
+    _move(row.get("썸네일", ""))
+    channel = VIDEO_DIR / Path(row["파일"]).parts[0]
+    unit = _unit(VIDEO_DIR / row["파일"], channel)
+    rest = list(unit.rglob("*") if unit != channel else unit.glob("*"))
+    if any(p.suffix.lower() in VIDEO_EXT for p in rest):
+        return
+    if unit == channel:  # 채널 폴더에 바로 둔 경우: 남은 메모장·이미지만 (다른 묶음 폴더는 건드리지 않음)
+        rest = [p for p in rest if p.suffix.lower() in IMAGE_EXT | {".txt"}]
+    for f in (p for p in rest if p.is_file()):
+        _move(rel(f))
+    dirs = sorted((p for p in rest if p.is_dir()), key=lambda p: len(p.parts), reverse=True)
+    for d in dirs + ([unit] if unit != channel else []):  # 채널 폴더 자체는 남긴다
+        if d.exists() and not any(d.iterdir()):
+            d.rmdir()

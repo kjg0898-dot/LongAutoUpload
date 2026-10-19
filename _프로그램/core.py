@@ -614,3 +614,63 @@ def move_done(row):
     for d in dirs + [unit, batch]:
         if d.exists() and not any(d.iterdir()):
             d.rmdir()
+
+
+# ---------- 청소 ----------
+# (이름, 기본으로 체크할지, 위험한지) — 위험한 것은 지우면 다시 준비해야 하거나 영상 파일이 사라진다
+CLEAN_GROUPS = [
+    ("시험 결과·오류·임시 파일", True, False),
+    ("백업 (엑셀 사본, 2단계 전 원래 제목·설명)", True, False),
+    ("작업 기록", True, False),
+    ("엑셀 (업로드목록)", False, False),
+    ("완료 폴더 안 파일 (끝난 영상)", False, True),
+    ("영상 폴더 안 파일 (진행 중 영상)", False, True),
+    ("설정·로그인 (채널 설정과 로그인 — 다시 로그인 필요)", False, True),
+    ("열쇠 파일 (구글에서 다시 받아야 함)", False, True),
+]
+
+
+def clean_targets():
+    """{그룹 이름: [지울 경로]} — 지금 실제로 있는 것만."""
+    def inside(folder):  # 폴더는 남기고 안의 것만 (GitHub에서 받은 .gitkeep도 남김)
+        return [p for p in folder.iterdir() if p.name != ".gitkeep"] if folder.exists() else []
+    names = [g[0] for g in CLEAN_GROUPS]
+    groups = {
+        names[0]: [PROG / n for n in ("테스트결과.txt", "전체기능_결과.txt", "PC점검_결과.txt", "켜기_오류.txt",
+                                      "리허설", "__pycache__", "토큰/테스트.json")]
+                  + list(PROG.rglob("*.새것")) + list(ROOT.glob("~*.저장중.xlsx")),
+        names[1]: [BACKUP_DIR],
+        names[2]: [LOG_DIR],
+        names[3]: [EXCEL],
+        names[4]: inside(DONE_DIR),
+        names[5]: inside(VIDEO_DIR),
+        names[6]: [CONFIG, PROG / "토큰"],
+        names[7]: list(PROG.glob("client_secret*.json")),
+    }
+    return {k: [p for p in v if p.exists()] for k, v in groups.items()}
+
+
+def size_of(paths):
+    total = 0
+    for p in paths:
+        files = [p] if p.is_file() else [f for f in p.rglob("*") if f.is_file()]
+        total += sum(f.stat().st_size for f in files)
+    return total
+
+
+def trash(paths):
+    """지운다. 윈도우에서는 휴지통으로 보내서 되살릴 수 있게. 지우지 못한 경로 목록을 돌려준다."""
+    import subprocess
+    import sys
+    paths = [p for p in paths if p.exists()]
+    if sys.platform == "win32" and paths:
+        q = lambda p: str(p).replace("'", "''")  # noqa: E731  PowerShell 작은따옴표 이스케이프
+        ps = "Add-Type -AssemblyName Microsoft.VisualBasic;" + "".join(
+            f"[Microsoft.VisualBasic.FileIO.FileSystem]::"
+            f"{'DeleteDirectory' if p.is_dir() else 'DeleteFile'}('{q(p)}','OnlyErrorDialogs','SendToRecycleBin');"
+            for p in paths)
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps], creationflags=0x08000000, timeout=600)
+    else:
+        for p in paths:
+            shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True)
+    return [p for p in paths if p.exists()]

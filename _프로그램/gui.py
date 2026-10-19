@@ -73,7 +73,7 @@ class App:
         bar2.pack(fill="x")
         for text, cmd in (("설정", self.open_settings), ("안내", self.open_help), ("영상 폴더", lambda: self.open_dir(core.VIDEO_DIR)),
                           ("완료 폴더", lambda: self.open_dir(core.DONE_DIR)), ("기록 폴더", lambda: self.open_dir(core.LOG_DIR)),
-                          ("업데이트", self.update)):
+                          ("업데이트", self.update), ("청소", self.clean_window)):
             ttk.Button(bar2, text=text, command=cmd).pack(side="left", padx=2)
 
         box = ttk.LabelFrame(root, text="진행 상황", padding=6)
@@ -254,6 +254,55 @@ class App:
         self.progress.stop()
         subprocess.Popen([sys.executable, str(core.ROOT / "실행.pyw")], cwd=str(core.ROOT))
         self.root.destroy()
+
+    def clean_window(self):
+        if self.busy:
+            return messagebox.showinfo("청소", "작업이 끝난 뒤에 해주세요.")
+        groups = core.clean_targets()
+        win = tk.Toplevel(self.root)
+        win.title("청소")
+        ttk.Label(win, padding=10, justify="left", text=(
+            "지울 것을 고르세요. 윈도우에서는 휴지통으로 가서 되살릴 수 있습니다.\n"
+            "프로그램 파일은 지우지 않습니다 (지워도 켤 때 자동 업데이트로 다시 받음).")).pack(anchor="w")
+        checks = {}
+        for name, on, risky in core.CLEAN_GROUPS:
+            paths = groups[name]
+            var = tk.BooleanVar(value=on and bool(paths))
+            size = core.size_of(paths)
+            label = f"{'⚠ ' if risky else ''}{name} — " + (f"{len(paths)}개, {size / 1024 / 1024:.1f}MB" if paths else "없음")
+            cb = ttk.Checkbutton(win, text=label, variable=var)
+            cb.pack(anchor="w", padx=14, pady=1)
+            if not paths:
+                cb.state(["disabled"])
+            checks[name] = (var, risky, paths)
+        bar = ttk.Frame(win, padding=10)
+        bar.pack(fill="x")
+
+        def select_all():
+            for var, _, paths in checks.values():
+                var.set(bool(paths))
+
+        def go():
+            chosen = [(name, risky, paths) for name, (var, risky, paths) in checks.items() if var.get()]
+            if not chosen:
+                return messagebox.showinfo("청소", "고른 것이 없습니다.", parent=win)
+            risky = [name for name, r, _ in chosen if r]
+            if risky and not messagebox.askyesno("정말 지울까요?", "아래는 지우면 다시 준비해야 하거나 영상 파일이 사라집니다:\n- "
+                                                 + "\n- ".join(risky) + "\n\n(휴지통에서 되살릴 수는 있습니다)", parent=win):
+                return
+            win.destroy()
+
+            def work(app):
+                failed = core.trash([p for _, _, paths in chosen for p in paths])
+                if failed:
+                    app.alert("청소: 지우지 못한 것 (다른 프로그램에서 열려 있는지 확인):\n" + "\n".join(str(f) for f in failed))
+                else:  # 기록 파일에는 안 남긴다 (방금 지운 기록 폴더가 다시 생기지 않게)
+                    msg = "청소: 깨끗하게 지웠습니다. " + ", ".join(name.split(" (")[0] for name, _, _ in chosen)
+                    toast("롱폼 자동 업로드", msg)
+                    app.q.put(("log", msg))
+            self.run(work, "청소")
+        ttk.Button(bar, text="모두 선택 (완전 초기화)", command=select_all).pack(side="left")
+        ttk.Button(bar, text="청소하기", command=go).pack(side="right")
 
     def open_settings(self):
         if self.settings and self.settings.win.winfo_exists():

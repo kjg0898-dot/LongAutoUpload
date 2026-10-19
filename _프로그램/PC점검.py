@@ -73,6 +73,17 @@ def env():
         moved.unlink()
         return True, "만들기·옮기기·지우기 됨"
     check("폴더에 쓰기(한글 이름)", write_test)
+
+    def recycle_test():  # 청소 기능이 쓰는 휴지통 보내기
+        import core
+        folder = HERE / "휴지통시험_폴더"
+        folder.mkdir(exist_ok=True)
+        (folder / "안.txt").write_text("시험", encoding="utf-8")
+        file = HERE / "휴지통시험_파일.txt"
+        file.write_text("시험", encoding="utf-8")
+        left = core.trash([folder, file])
+        return not left, "휴지통으로 보냄 (휴지통에 '휴지통시험' 2개가 생겼으면 비워도 됩니다)" if not left else f"남음: {left}"
+    check("청소: 휴지통으로 보내기", recycle_test)
     import urllib.request
 
     def reach(url):
@@ -126,7 +137,8 @@ def excel_lock():
             core.write_rows([dict.fromkeys(core.COLUMNS, "") | {"채널": "시험", "파일": "시험.mp4"}])
             return False, "열려 있는데 저장돼 버림"
         except core.ExcelLocked:
-            return not any(SANDBOX.glob("~*")), "저장 막힘, 임시 파일 안 남음"
+            # 엑셀이 스스로 만드는 잠금 파일(~$…)은 빼고, 프로그램의 임시 파일(…저장중.xlsx)만 본다
+            return not any(SANDBOX.glob("*.저장중.xlsx")), "저장 막힘, 임시 파일 안 남음"
     check("열려 있을 때 저장 막힘", save_blocked)
     input("이제 엑셀을 '저장하지 않고' 닫은 뒤 엔터를 누르세요… ")
     time.sleep(2)
@@ -236,8 +248,13 @@ def rehearsal():
        v["snippet"].get("description", "")[:60].replace("\n", " / "))
     ok("2단계: 일부공개", v["status"]["privacyStatus"] == "unlisted", v["status"]["privacyStatus"])
     ok("2단계: 원본 백업", (core.BACKUP_DIR / "영상" / f"{vid}.json").exists())
-    threads = yt.execute(client.commentThreads().list(part="snippet", videoId=vid, maxResults=20))["items"]
-    mine = [c for c in threads if "리허설 댓글" in c["snippet"]["topLevelComment"]["snippet"].get("textOriginal", "")]
+    mine = []
+    for wait in (3, 5, 10, 15, 20):  # 댓글은 단 뒤 목록에 보이기까지 몇 초~수십 초 걸린다
+        time.sleep(wait)
+        threads = yt.execute(client.commentThreads().list(part="snippet", videoId=vid, maxResults=20))["items"]
+        mine = [c for c in threads if "리허설 댓글" in c["snippet"]["topLevelComment"]["snippet"].get("textOriginal", "")]
+        if mine:
+            break
     ok("2단계: 댓글", bool(mine), "목록에서 확인" if mine else "아직 안 보임 (Studio 댓글에서 확인)")
     ok("3단계: 고정 탭 주소", bool(steps.pin_targets(core.read_rows(), cfg)), "고정은 직접 하는 단계라 주소만 확인")
 

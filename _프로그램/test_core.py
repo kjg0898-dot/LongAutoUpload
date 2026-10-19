@@ -304,6 +304,33 @@ def test_video_id():
     assert core.video_id("") == ""
 
 
+def test_clean():
+    """청소: 기본 그룹은 시험 결과·백업·기록만, 영상·로그인·열쇠는 골라야 지움. 폴더 자체와 .gitkeep은 남김."""
+    with tempfile.TemporaryDirectory() as d:
+        old = (core.PROG, core.ROOT, core.VIDEO_DIR, core.DONE_DIR, core.EXCEL, core.CONFIG, core.BACKUP_DIR, core.LOG_DIR)
+        root = Path(d)
+        core.ROOT, core.PROG = root, root / "_프로그램"
+        core.VIDEO_DIR, core.DONE_DIR, core.EXCEL = root / "영상", root / "완료", root / "업로드목록.xlsx"
+        core.CONFIG, core.BACKUP_DIR, core.LOG_DIR = core.PROG / "설정.json", core.PROG / "백업", core.PROG / "기록"
+        try:
+            for f in ("_프로그램/PC점검_결과.txt", "_프로그램/리허설/a.xlsx", "_프로그램/백업/영상/v.json", "_프로그램/기록/1.log",
+                      "_프로그램/core.py", "_프로그램/토큰/테스트.json", "_프로그램/토큰/abc.json", "_프로그램/설정.json",
+                      "_프로그램/client_secret_1.json", "영상/.gitkeep", "영상/2026/a.mp4", "완료/b.mp4", "업로드목록.xlsx"):
+                (root / f).parent.mkdir(parents=True, exist_ok=True)
+                (root / f).write_text("x")
+            groups = core.clean_targets()
+            default = [p for (name, on, _), paths in zip(core.CLEAN_GROUPS, groups.values()) if on for p in paths]
+            assert core.trash(default) == []
+            left = sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
+            assert left == ["_프로그램/client_secret_1.json", "_프로그램/core.py", "_프로그램/설정.json", "_프로그램/토큰/abc.json",
+                            "업로드목록.xlsx", "영상/.gitkeep", "영상/2026/a.mp4", "완료/b.mp4"], left
+            assert core.trash([p for paths in core.clean_targets().values() for p in paths]) == []
+            left = sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
+            assert left == ["_프로그램/core.py", "영상/.gitkeep"] and (root / "완료").is_dir(), left  # 프로그램은 그대로
+        finally:
+            (core.PROG, core.ROOT, core.VIDEO_DIR, core.DONE_DIR, core.EXCEL, core.CONFIG, core.BACKUP_DIR, core.LOG_DIR) = old
+
+
 def test_overrides():
     ch = {**core.DEFAULT_CHANNEL}
     assert core.overrides(ch) == ({}, {})  # 기본값은 아무것도 건드리지 않음

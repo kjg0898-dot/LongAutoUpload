@@ -1,0 +1,22 @@
+{
+ "id": "vid1",
+ "fileDetails": {
+  "fileName": "2.mp4"
+ },
+ "snippet": {
+  "title": "[숨겨진 동양사]   l 역사 인물 l 고전 | 수면오디오북",
+  "description": "구독 부탁",
+  "tags": [
+   "기본"
+  ],
+  "categoryId": "22",
+  "channelId": "UC1",
+  "thumbnails": {}
+ },
+ "status": {
+  "privacyStatus": "private",
+  "uploadStatus": "processed",
+  "madeForKids": false,
+  "selfDeclaredMadeForKids": false
+ }
+}

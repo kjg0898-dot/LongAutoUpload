@@ -1,6 +1,7 @@
 """파일·메모장·엑셀·예약 계산. YouTube에 연결하지 않는 부분만 모아둔다."""
 import difflib
 import json
+import os
 import re
 import shutil
 import uuid
@@ -13,6 +14,9 @@ VIDEO_DIR = ROOT / "영상"
 DONE_DIR = ROOT / "완료"
 EXCEL = ROOT / "업로드목록.xlsx"
 CONFIG = PROG / "설정.json"
+BACKUP_DIR = PROG / "백업"  # 2단계에서 고치기 전 원래 제목·설명, 엑셀 사본
+LOG_DIR = PROG / "기록"
+SHEET = "업로드목록"
 KST = timezone(timedelta(hours=9))  # 한국은 서머타임이 없어서 고정 시차로 충분
 
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".wmv", ".flv"}
@@ -38,8 +42,16 @@ DEFAULT_CHANNEL = {
 }
 DEFAULT_CONFIG = {"channels": [], "max_fails": 3, "mode": "한 번에 전체"}
 
-COLUMNS = ["채널", "파일", "제목", "제목후보", "설명", "태그", "고정댓글", "메모장", "썸네일",
-           "회원우선", "예약일시", "상태", "오류", "영상ID"]
+# 사용자가 고치는 칸(제목·회원우선·예약일시·영상ID)을 앞쪽에
+COLUMNS = ["채널", "파일", "제목", "회원우선", "예약일시", "상태", "오류", "영상ID",
+           "제목후보", "설명", "태그", "고정댓글", "메모장", "썸네일"]
+EDITABLE = ("제목", "회원우선", "예약일시", "영상ID")
+DONE_STATES = ("예약완료", "완료(회원 직접설정)")
+
+
+def is_member(value):
+    """회원우선 칸: O·예·Y만 '예'. 'X'나 '아니요'를 적어도 예로 치지 않게."""
+    return str(value).strip().lower() in ("o", "ㅇ", "○", "●", "예", "y", "yes", "v", "✓", "true", "1")
 
 
 # ---------- 설정 ----------
@@ -57,6 +69,14 @@ def save_config(cfg):
     names = [ch["name"].strip() for ch in cfg["channels"]]
     if "" in names or len(set(names)) != len(names):
         raise ValueError("채널 이름이 비어 있거나 겹칩니다.")
+    folders = [ch["folder"].strip() for ch in cfg["channels"]]
+    if "" in folders or len({f.lower() for f in folders}) != len(folders):
+        raise ValueError("영상 폴더 이름이 비어 있거나 겹칩니다.")
+    bad = [f for f in folders if re.search(r'[\\/:*?"<>|]', f) or f in (".", "..")]
+    if bad:
+        raise ValueError(f'영상 폴더 이름에 쓸 수 없는 글자가 있습니다 (\\ / : * ? " < > |): {", ".join(bad)}')
+    for ch in cfg["channels"]:
+        parse_slots(ch["slots"], ch["name"])
     CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8")
     VIDEO_DIR.mkdir(exist_ok=True)
 
@@ -163,7 +183,7 @@ def parse_tags(text):
 def merge(template, content, mode, marker="", sep=" "):
     """초안의 틀(template)은 남기고 content를 정해진 자리에 넣는다."""
     template, content = (template or "").strip(), (content or "").strip()
-    if not content or content in template:  # 다시 실행해도 두 번 들어가지 않게
+    if not content:
         return template
     if not template:
         return content
@@ -292,7 +312,9 @@ def scan_channel(folder):
 
 def channel_dirs(ch):
     """영상/<묶음>/<채널 폴더> 들, 묶음 이름 순서."""
-    return sorted((d for d in VIDEO_DIR.glob(f"*/{ch['folder']}") if d.is_dir()), key=natural_key)
+    if not VIDEO_DIR.exists():
+        return []
+    return sorted((b / ch["folder"] for b in VIDEO_DIR.iterdir() if (b / ch["folder"]).is_dir()), key=natural_key)
 
 
 def new_batch(cfg, today=None):
@@ -310,17 +332,18 @@ def new_batch(cfg, today=None):
 DAYS = "월화수목금토일"
 
 
-def parse_slots(spec):
+def parse_slots(spec, channel=""):
+    where = f"[{channel}] " if channel else ""
     out = []
     for part in re.split(r"[,\n/]+", spec or ""):
         if not part.strip():
             continue
         m = re.fullmatch(r"\s*([월화수목금토일])\S*\s+(\d{1,2}):(\d{2})\s*", part)
         if not m or int(m[2]) > 23 or int(m[3]) > 59:
-            raise ValueError(f"예약 시간 형식 오류: '{part.strip()}' (예: 월 18:00)")
+            raise ValueError(f"{where}공개 요일·시간 형식 오류: '{part.strip()}' (예: 월 18:00, 수 18:00)")
         out.append((DAYS.index(m[1]), int(m[2]), int(m[3])))
     if not out:
-        raise ValueError("예약 요일·시간이 비어 있습니다.")
+        raise ValueError(f"{where}공개 요일·시간이 비어 있습니다.")
     return sorted(out)
 
 
@@ -340,7 +363,10 @@ def parse_dt(value):
         return None
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=KST)
-    return datetime.strptime(str(value).strip()[:16], "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+    try:
+        return datetime.strptime(re.sub(r"\s+", " ", str(value).strip())[:16], "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+    except ValueError:
+        raise ValueError(f"예약일시 형식 오류: '{value}' (예: 2026-10-21 12:15)") from None
 
 
 def fmt_dt(t):
@@ -355,7 +381,7 @@ def fill_schedule(rows, ch, last_scheduled, now):
         return
     after = max([now + timedelta(minutes=30)] + ([last_scheduled] if last_scheduled else [])
                 + [parse_dt(r["예약일시"]) for r in mine if r["예약일시"]])
-    for r, t in zip(blanks, next_slots(after, parse_slots(ch["slots"]), len(blanks))):
+    for r, t in zip(blanks, next_slots(after, parse_slots(ch["slots"], ch["name"]), len(blanks))):
         r["예약일시"] = fmt_dt(t)
 
 
@@ -367,13 +393,15 @@ def rel(p):
 def build_rows(cfg, old_rows):
     """영상 폴더를 훑어 엑셀 행을 만든다. 이미 있던 행(사용자가 고친 제목 등)은 그대로 둔다."""
     old = {r["파일"]: r for r in old_rows}
-    rows, problems = [], []
+    rows, problems, seen = [], [], set()
     for ch, folder in ((ch, d) for ch in cfg["channels"] for d in channel_dirs(ch)):
-        added = []
+        batch_rows = []
         for video, entry, thumb in scan_channel(folder):
             name = rel(video)
+            seen.add(name)
             if name in old:
                 rows.append(old[name])
+                batch_rows.append(old[name])
                 continue
             info = entry or {}
             if not entry:
@@ -388,57 +416,121 @@ def build_rows(cfg, old_rows):
                 "설명": info.get("desc", ""), "태그": info.get("tags", ""), "고정댓글": info.get("comment", ""),
                 "메모장": rel(info.get("src")), "썸네일": rel(thumb)}
             rows.append(row)
-            added.append(row)
-        if ch["members"] and added and not any(r["회원우선"] for r in rows if r["채널"] == ch["name"]):
-            added[-1]["회원우선"] = "O"  # 기본 규칙: 이번 묶음의 마지막 영상
+            batch_rows.append(row)
+        pending = [r for r in batch_rows if r["상태"] == ""]
+        if ch["members"] and pending and not any(is_member(r["회원우선"]) for r in batch_rows):
+            pending[-1]["회원우선"] = "O"  # 기본 규칙: 이 묶음에서 아직 처리 전인 마지막 영상
+    for r in old_rows:  # 파일을 옮기거나 이름을 바꿨어도 진행 중인 행은 남긴다 (영상ID를 잃으면 댓글이 두 번 달림)
+        if r["파일"] not in seen and r["상태"] and r["상태"] not in DONE_STATES:
+            rows.append(r)
+            problems.append(f"{r['파일']}: 파일이 안 보이지만 진행 중이라 목록에 남겨둠 (영상ID {r['영상ID']})")
     names = {ch["name"] for ch in cfg["channels"]}
     problems += [f"{r['파일']}: 설정에 없는 채널 '{r['채널']}'" for r in rows if r["채널"] not in names]
-    unknown = {rel(v) for v in VIDEO_DIR.rglob("*") if v.suffix.lower() in VIDEO_EXT} - {r["파일"] for r in rows}
+    titles = [r["제목"].strip() for r in rows if r["상태"] == "" and r["제목"].strip()]
+    problems += [f"같은 제목이 {titles.count(t)}개: {t}" for t in sorted(set(titles)) if titles.count(t) > 1]
+    unknown = {rel(v) for v in VIDEO_DIR.rglob("*") if v.suffix.lower() in VIDEO_EXT} - seen
     problems += [f"{name}: 어느 채널인지 모름 (영상/묶음/채널폴더/ 안에 넣어주세요)" for name in sorted(unknown)]
     return rows, problems
+
+
+class ExcelLocked(PermissionError):
+    pass
+
+
+def _cell(v):
+    if v is None:
+        return ""
+    if isinstance(v, datetime):  # 엑셀이 날짜로 바꾼 칸. 시간이 없으면(00:00) 형식 오류로 알리게 날짜만 남긴다
+        return v.strftime("%Y-%m-%d") if (v.hour, v.minute) == (0, 0) else fmt_dt(parse_dt(v))
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip()
 
 
 def read_rows():
     if not EXCEL.exists():
         return []
     import openpyxl
-    ws = openpyxl.load_workbook(EXCEL).active
-    head = [c.value for c in ws[1]]
+    wb = openpyxl.load_workbook(EXCEL)
+    ws = wb[SHEET] if SHEET in wb.sheetnames else wb.worksheets[0]
+    head = [str(c.value).strip() if c.value is not None else "" for c in ws[1]]
+    if "파일" not in head:
+        raise ValueError(f"엑셀 '{SHEET}' 시트의 첫 줄(제목 줄)이 바뀌었습니다. "
+                         f"_프로그램/백업/엑셀 의 사본을 쓰거나, 엑셀을 지우고 1단계를 다시 눌러주세요.")
     rows = []
     for values in ws.iter_rows(min_row=2, values_only=True):
-        r = {col: values[head.index(col)] if col in head else "" for col in COLUMNS}
-        r = {k: ("" if v is None else fmt_dt(parse_dt(v)) if isinstance(v, datetime) else str(v))
-             for k, v in r.items()}
+        r = {col: _cell(values[head.index(col)]) if col in head and head.index(col) < len(values) else ""
+             for col in COLUMNS}
         if r["파일"]:
             rows.append(r)
     return rows
 
 
 def write_rows(rows):
+    """엑셀 저장. 다른 시트는 남기고, 임시 파일에 쓴 뒤 바꿔치기해서 저장 중에 꺼져도 파일이 깨지지 않게."""
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "업로드목록"
+    from openpyxl.worksheet.datavalidation import DataValidation
+    try:
+        wb = openpyxl.load_workbook(EXCEL) if EXCEL.exists() else openpyxl.Workbook()
+    except Exception:
+        wb = openpyxl.Workbook()
+    if SHEET in wb.sheetnames:
+        del wb[SHEET]
+    for w in [w for w in wb.worksheets if w.title == "Sheet" and w.max_row == 1 and w["A1"].value is None]:
+        wb.remove(w)  # 새 엑셀의 빈 기본 시트
+    ws = wb.create_sheet(SHEET, 0)
+    wb.active = 0
     ws.append(COLUMNS)
     for r in rows:
         ws.append([r.get(c, "") for c in COLUMNS])
-    widths = {"채널": 12, "파일": 30, "제목": 45, "제목후보": 45, "설명": 40, "태그": 25, "고정댓글": 30, "메모장": 20,
-              "썸네일": 20, "회원우선": 9, "예약일시": 17, "상태": 12, "오류": 30, "영상ID": 14}
+    widths = {"채널": 12, "파일": 28, "제목": 50, "회원우선": 9, "예약일시": 17, "상태": 12, "오류": 40, "영상ID": 14,
+              "제목후보": 50, "설명": 40, "태그": 20, "고정댓글": 30, "메모장": 20, "썸네일": 20}
     edit = PatternFill("solid", fgColor="FFF2CC")  # 사용자가 고치는 칸
+    bad = PatternFill("solid", fgColor="F8CBAD")  # 오류가 있는 칸
     for i, col in enumerate(COLUMNS, 1):
         letter = ws.cell(1, i).column_letter
         ws.column_dimensions[letter].width = widths[col]
         ws.cell(1, i).font = Font(bold=True)
         for cell in ws[letter][1:]:
-            cell.alignment = Alignment(wrap_text=col in ("제목후보", "설명", "고정댓글", "오류"), vertical="top")
-            if col in ("제목", "회원우선", "예약일시"):
+            cell.alignment = Alignment(wrap_text=col in ("제목후보", "오류"), vertical="top")
+            if col in EDITABLE:
                 cell.fill = edit
-    ws.freeze_panes = "C2"
+            if col == "오류" and cell.value:
+                cell.fill = bad
+    ws.freeze_panes = "D2"
+    ws.auto_filter.ref = ws.dimensions
+    member = DataValidation(type="list", formula1='"O"', allow_blank=True, showErrorMessage=True,
+                            errorTitle="회원우선", error="회원 우선 공개면 O, 아니면 비워두세요.")
+    ws.add_data_validation(member)
+    member.add(f"D2:D{max(len(rows) + 1, 2)}")
+    tmp = EXCEL.with_name(f"~{EXCEL.stem}.저장중.xlsx")
     try:
-        wb.save(EXCEL)
+        wb.save(tmp)
+        os.replace(tmp, EXCEL)
     except PermissionError:
-        raise PermissionError("엑셀 파일이 열려 있어서 저장하지 못했습니다. 엑셀을 닫고 다시 눌러주세요.") from None
+        tmp.unlink(missing_ok=True)
+        raise ExcelLocked("엑셀 파일이 열려 있어서 저장하지 못했습니다. 엑셀을 닫아주세요.") from None
+
+
+def backup_excel():
+    """단계를 시작할 때마다 엑셀 사본을 남긴다 (최근 30개)."""
+    if not EXCEL.exists():
+        return
+    folder = BACKUP_DIR / "엑셀"
+    folder.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(EXCEL, folder / f"업로드목록_{datetime.now(KST):%Y%m%d_%H%M%S}.xlsx")
+    for old in sorted(folder.glob("업로드목록_*.xlsx"))[:-30]:
+        old.unlink()
+
+
+def save_original(video):
+    """2단계에서 처음 고치기 전의 영상 정보(초안 틀 포함)를 남긴다. 다시 실행해도 항상 이 원본 틀에서 합친다."""
+    path = BACKUP_DIR / "영상" / f"{video['id']}.json"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(video, ensure_ascii=False, indent=1), "utf-8")
+    return json.loads(path.read_text("utf-8"))
 
 
 # ---------- 완료 ----------

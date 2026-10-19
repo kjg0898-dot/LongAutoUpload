@@ -14,8 +14,8 @@ def test_merge():
     assert m("A {제목} B", "X", "표시 문자 바꾸기", "{제목}") == "A X B"
     assert m("구독 부탁", "본문", "맨 앞", sep="\n\n") == "본문\n\n구독 부탁"
     assert m("구독 부탁", "본문", "맨 뒤", sep="\n\n") == "구독 부탁\n\n본문"
-    once = m("【명언】 | 채널", "인생", "기준 글자 앞", "|")
-    assert m(once, "인생", "기준 글자 앞", "|") == once  # 두 번 실행해도 한 번만
+    # 제목이 틀에 있는 낱말(예: 고전)과 같아도 넣는다 (다시 실행 대비는 원본 틀 백업으로 함)
+    assert m("[숨겨진 동양사]   l 역사 인물 l 고전", "고전", "기준 글자 뒤", "]") == "[숨겨진 동양사] 고전 l 역사 인물 l 고전"
     assert m("", "제목만", "기준 글자 앞", "|") == "제목만"
     assert m("틀", "", "맨 앞") == "틀"
     try:
@@ -190,6 +190,48 @@ def test_scan_and_build():
         core.DONE_DIR = Path(d) / "완료"
         core.move_done(rows[2])
         assert (core.DONE_DIR / rows[2]["파일"]).exists() and not (core.VIDEO_DIR / rows[2]["파일"]).exists()
+
+
+def test_excel_safety():
+    """다른 시트는 남고, 날짜만 적은 예약일시·이상한 값은 형식 오류로, 회원우선은 O만 예."""
+    import openpyxl
+    with tempfile.TemporaryDirectory() as d:
+        core.EXCEL = Path(d) / "목록.xlsx"
+        row = dict.fromkeys(core.COLUMNS, "") | {"채널": "A", "파일": "b/A/1.mp4", "제목": "제목"}
+        core.write_rows([row])
+        wb = openpyxl.load_workbook(core.EXCEL)
+        wb.create_sheet("메모")["A1"] = "내 메모"
+        ws = wb[core.SHEET]
+        ws.cell(2, core.COLUMNS.index("예약일시") + 1).value = datetime(2026, 10, 21)  # 엑셀에서 날짜만 입력
+        wb.active = 1  # 사용자가 다른 시트를 보고 저장
+        wb.save(core.EXCEL)
+        rows = core.read_rows()
+        assert rows[0]["제목"] == "제목" and rows[0]["예약일시"] == "2026-10-21"
+        try:
+            core.parse_dt(rows[0]["예약일시"])
+            raise AssertionError
+        except ValueError as e:
+            assert "형식" in str(e)
+        core.write_rows(rows)
+        assert openpyxl.load_workbook(core.EXCEL)["메모"]["A1"].value == "내 메모"
+        assert not list(Path(d).glob("~*"))  # 임시 파일이 남지 않음
+    assert [core.is_member(v) for v in ("O", "o", "예", "", "X", "아니요")] == [True, True, True, False, False, False]
+
+
+def test_config_validation():
+    with tempfile.TemporaryDirectory() as d:
+        core.CONFIG, core.VIDEO_DIR = Path(d) / "설정.json", Path(d) / "영상"
+        ch = lambda name, folder, slots="월 12:00": {**core.DEFAULT_CHANNEL, "name": name, "folder": folder, "slots": slots}  # noqa: E731
+        for bad, word in (([ch("A", "x"), ch("B", "X")], "폴더"), ([ch("A", "a/b")], "글자"),
+                          ([ch("A", "")], "폴더"), ([ch("숨겨진동양사", "a", "월요일12시")], "[숨겨진동양사]")):
+            try:
+                core.save_config({**core.DEFAULT_CONFIG, "channels": bad})
+                raise AssertionError(bad)
+            except ValueError as e:
+                assert word in str(e), e
+        core.save_config({**core.DEFAULT_CONFIG, "channels": [ch("A", "[숨겨진동양사]")]})
+        (core.VIDEO_DIR / "1" / "[숨겨진동양사]").mkdir(parents=True)
+        assert len(core.channel_dirs(ch("A", "[숨겨진동양사]"))) == 1  # [ ] 가 들어간 폴더 이름
 
 
 def test_overrides():

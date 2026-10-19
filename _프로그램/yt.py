@@ -1,4 +1,5 @@
 """YouTube Data API 호출. 공식 API만 쓴다."""
+import random
 import time
 from datetime import datetime, timezone
 
@@ -11,18 +12,23 @@ SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
 READONLY_SNIPPET = {"thumbnails", "channelId", "channelTitle", "publishedAt", "liveBroadcastContent", "localized"}
 WRITABLE_STATUS = {"privacyStatus", "publishAt", "license", "embeddable", "publicStatsViewable",
                    "selfDeclaredMadeForKids", "containsSyntheticMedia"}
+# 할당량 (단위/회): 목록 조회 1, 수정·썸네일·댓글·재생목록 추가 50. 하루 10,000 (모든 채널 합산)
+COST_FILL, COST_SCHEDULE, DAILY_QUOTA = 200, 50, 10000
 
 
 class NotLoggedIn(Exception):
     pass
 
 
-def login(key, interactive=True):
+def login(key, interactive=True, fresh=False):
+    """채널 하나의 로그인. fresh면 저장된 로그인을 지우고 브라우저에서 새로 받는다(다른 채널로 잘못 로그인했을 때)."""
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     token = TOKENS / f"{key}.json"
+    if fresh:
+        token.unlink(missing_ok=True)
     creds = Credentials.from_authorized_user_file(token, SCOPES) if token.exists() else None
     if creds and creds.expired and creds.refresh_token:
         try:
@@ -33,8 +39,15 @@ def login(key, interactive=True):
         if not interactive:
             raise NotLoggedIn
         if not SECRET.exists():
-            raise FileNotFoundError(f"client_secret.json이 없습니다. 구글연동_안내.md대로 받아서 넣어주세요: {PROG}")
-        creds = InstalledAppFlow.from_client_secrets_file(SECRET, SCOPES).run_local_server(port=0)
+            raise FileNotFoundError(f"client_secret.json이 없습니다. '안내' 버튼의 구글 연동 안내대로 받아서 넣어주세요: {PROG}")
+        try:
+            # 매번 계정·채널 선택 화면을 띄워 원하는 채널을 고르게 한다. 5분 안에 안 끝나면 포기
+            creds = InstalledAppFlow.from_client_secrets_file(SECRET, SCOPES).run_local_server(
+                port=0, prompt="select_account consent", timeout_seconds=300)
+        except Exception as e:
+            raise RuntimeError(f"로그인을 마치지 못했습니다(5분이 지났거나 창을 닫음). 다시 눌러주세요. ({e})") from None
+        if not creds or not creds.valid:
+            raise RuntimeError("로그인을 마치지 못했습니다(5분이 지났거나 창을 닫음). 다시 눌러주세요.")
     TOKENS.mkdir(exist_ok=True)
     token.write_text(creds.to_json(), encoding="utf-8")
     return creds
@@ -46,7 +59,7 @@ def build_client(creds):
 
 
 def whoami(yt):
-    ch = yt.channels().list(part="snippet", mine=True).execute()["items"][0]
+    ch = execute(yt.channels().list(part="snippet", mine=True))["items"][0]
     return ch["id"], ch["snippet"]["title"]
 
 
@@ -64,18 +77,18 @@ def client_for(ch, interactive=False):
 def get_videos(yt, ids):
     out = []
     for i in range(0, len(ids), 50):
-        out += yt.videos().list(part="snippet,status,fileDetails", id=",".join(ids[i:i + 50])).execute()["items"]
+        out += execute(yt.videos().list(part="snippet,status,fileDetails", id=",".join(ids[i:i + 50])))["items"]
     return out
 
 
 def recent_videos(yt, limit=200):
     # shortcut: 최근 업로드 200개만 본다. 묶음이 그보다 크면 limit을 올린다
-    uploads = yt.channels().list(part="contentDetails", mine=True).execute()["items"][0][
+    uploads = execute(yt.channels().list(part="contentDetails", mine=True))["items"][0][
         "contentDetails"]["relatedPlaylists"]["uploads"]
     ids, page = [], None
     while len(ids) < limit:
-        res = yt.playlistItems().list(part="contentDetails", playlistId=uploads, maxResults=50,
-                                      pageToken=page).execute()
+        res = execute(yt.playlistItems().list(part="contentDetails", playlistId=uploads, maxResults=50,
+                                              pageToken=page))
         ids += [i["contentDetails"]["videoId"] for i in res["items"]]
         page = res.get("nextPageToken")
         if not page:
@@ -83,13 +96,13 @@ def recent_videos(yt, limit=200):
     return get_videos(yt, ids)
 
 
-def by_filename(videos):
-    """원본 파일 이름 → 영상. 묶음마다 파일 이름이 같을 수 있어서 아직 공개·예약 전인 것 중 가장 최근 것."""
-    out = {}
-    for v in sorted(videos, key=lambda v: v["snippet"].get("publishedAt", "")):
-        if v["status"].get("privacyStatus") != "public" and not v["status"].get("publishAt"):
-            out[v.get("fileDetails", {}).get("fileName", "").lower()] = v
-    return out
+def file_name(video):
+    return video.get("fileDetails", {}).get("fileName", "")
+
+
+def is_untouched(video):
+    """아직 공개·예약 전 (초안이거나 2단계에서 일부공개로만 바꾼 것)."""
+    return video["status"].get("privacyStatus") != "public" and not video["status"].get("publishAt")
 
 
 def last_scheduled(videos):
@@ -115,37 +128,53 @@ def update_video(yt, video, snippet=None, status=None):
     return execute(yt.videos().update(part=",".join(parts), body=body))
 
 
-def execute(request, waits=(3, 10, 30)):
-    """같은 영상을 연달아 고치면 409(conflict)가 나므로 잠깐 기다렸다 다시 보낸다."""
+def _status(e):
+    return getattr(getattr(e, "resp", None), "status", None)
+
+
+def execute(request, retry=(409, 429, 500, 503), waits=(3, 10, 30)):
+    """같은 영상을 연달아 고칠 때의 409, 잠깐의 서버 오류·속도 제한은 기다렸다 다시 보낸다. 할당량 소진은 바로 멈춘다."""
     for wait in (*waits, None):
         try:
             return request.execute()
         except Exception as e:
-            if wait is None or getattr(getattr(e, "resp", None), "status", None) not in (409, 500, 503):
+            code = _status(e)
+            rate_limited = code == 403 and "ateLimitExceeded" in error_text(e)
+            if wait is None or is_quota(e) or not (code in retry or rate_limited):
                 raise
-            time.sleep(wait)
+            time.sleep(wait + random.random() * 2)
 
 
 def set_thumbnail(yt, video_id, path):
     from googleapiclient.http import MediaFileUpload
-    yt.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(str(path))).execute()
+    execute(yt.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(str(path))))
 
 
 def add_to_playlist(yt, playlist_id, video_id):
-    found = yt.playlistItems().list(part="id", playlistId=playlist_id, videoId=video_id).execute()["items"]
+    found = execute(yt.playlistItems().list(part="id", playlistId=playlist_id, videoId=video_id))["items"]
     if not found:
-        yt.playlistItems().insert(part="snippet", body={"snippet": {
-            "playlistId": playlist_id, "resourceId": {"kind": "youtube#video", "videoId": video_id}}}).execute()
+        execute(yt.playlistItems().insert(part="snippet", body={"snippet": {
+            "playlistId": playlist_id, "resourceId": {"kind": "youtube#video", "videoId": video_id}}}))
 
 
 def post_comment(yt, video_id, text):
-    yt.commentThreads().insert(part="snippet", body={"snippet": {
-        "videoId": video_id, "topLevelComment": {"snippet": {"textOriginal": text}}}}).execute()
+    # 댓글은 실제로 달렸는데 응답만 실패했을 수 있어 서버 오류로는 다시 보내지 않는다 (중복 댓글 방지)
+    execute(yt.commentThreads().insert(part="snippet", body={"snippet": {
+        "videoId": video_id, "topLevelComment": {"snippet": {"textOriginal": text}}}}), retry=(409,))
+
+
+def to_utc(when):
+    return parse_dt(when).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def schedule(yt, video, when):
-    utc = parse_dt(when).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    update_video(yt, video, status={"privacyStatus": "private", "publishAt": utc})
+    try:
+        update_video(yt, video, status={"privacyStatus": "private", "publishAt": to_utc(when)})
+    except Exception as e:
+        if "invalidPublishAt" in error_text(e):
+            raise RuntimeError("YouTube가 예약을 거부했습니다(이미 공개된 적 있는 영상은 API로 예약 불가). "
+                               "Studio에서 직접 예약해주세요.") from None
+        raise
 
 
 def error_text(e):

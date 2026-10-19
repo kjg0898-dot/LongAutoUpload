@@ -65,6 +65,39 @@ def main():
         except Exception as e:
             log(f"되돌리기 실패! Studio에서 제목을 직접 '{original}'로 바꿔주세요. ({yt.error_text(e)})")
     log("\n결과: 초안 수정 가능")
+    schedule_test(yt, client, vid)
+
+
+def schedule_test(yt, client, vid):
+    """확인4: 일부공개로 바꾼 영상을 API로 예약할 수 있는지 (4단계가 이 방식). 끝나면 원래 상태로 되돌린다."""
+    print("\n[추가 테스트] 이 초안을 잠깐 '일부공개'로 바꿨다가 30일 뒤로 예약해 보고, 원래 상태로 되돌립니다.")
+    if input("할까요? (y/n): ").strip().lower() != "y":
+        log("확인4) 건너뜀")
+        return
+    from datetime import datetime, timedelta
+    import core
+    original = {k: v for k, v in yt.get_videos(client, [vid])[0]["status"].items() if k in yt.WRITABLE_STATUS}
+    log(f"원래 상태: {original}")
+    try:
+        yt.update_video(client, yt.get_videos(client, [vid])[0], status={"privacyStatus": "unlisted"})
+        time.sleep(5)
+        when = core.fmt_dt(datetime.now(core.KST) + timedelta(days=30))
+        yt.schedule(client, yt.get_videos(client, [vid])[0], when)
+        st = yt.get_videos(client, [vid])[0]["status"]
+        ok = st.get("privacyStatus") == "private" and st.get("publishAt")
+        log(f"확인4) 일부공개 → 예약: {'성공' if ok else '실패'} ({st.get('privacyStatus')} / {st.get('publishAt')})")
+    except Exception as e:
+        log(f"확인4) 일부공개 → 예약 실패: {yt.error_text(e)}")
+    finally:
+        time.sleep(5)
+        try:  # status를 통째로 원래 값으로 보내면 예약 시간도 원래대로(없으면 지워짐) 돌아간다
+            yt.execute(client.videos().update(part="status", body={"id": vid, "status": original}))
+            now = yt.get_videos(client, [vid])[0]["status"]
+            log(f"되돌린 상태: {now}")
+            if now.get("publishAt") and not original.get("publishAt"):
+                log("⚠ 예약 시간이 남아 있습니다! Studio에서 이 영상의 '공개 상태'를 열어 예약을 해제해주세요.")
+        except Exception as e:
+            log(f"상태 되돌리기 실패! Studio에서 이 영상의 공개 상태를 확인해주세요. ({yt.error_text(e)})")
 
 
 if __name__ == "__main__":

@@ -90,13 +90,16 @@ class UI:
     def alert(self, m):
         self.alerts.append(m)
 
+    def notify(self, m):
+        self.logs.append(m)
+
     def ask(self, q):
         return True
 
 
 def setup(d):
     core.VIDEO_DIR, core.DONE_DIR = Path(d) / "영상", Path(d) / "완료"
-    core.EXCEL, core.CONFIG = Path(d) / "목록.xlsx", Path(d) / "설정.json"
+    core.EXCEL, core.CONFIG, core.BACKUP_DIR = Path(d) / "목록.xlsx", Path(d) / "설정.json", Path(d) / "백업"
     ch = {**core.new_channel("명언"), "folder": "명언", "members": True, "channel_id": "UC1",
           "slots": "월 18:00, 수 18:00, 금 18:00", "playlist": "PL1"}
     core.save_config({**core.DEFAULT_CONFIG, "channels": [ch]})
@@ -200,6 +203,98 @@ def test_past_schedule_is_rejected():
         rows = core.read_rows()
         assert rows[0]["상태"] == "댓글완료" and "지났거나" in rows[0]["오류"]
         assert rows[1]["상태"] == "예약완료"
+
+
+def test_safety_guards():
+    """지난 묶음의 같은 이름 영상, 공개 영상ID, 같은 이름 초안 2개 → 고치지 않고 오류."""
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        old = {**fake.videos_db["vid0"], "id": "old0", "snippet": {**fake.videos_db["vid0"]["snippet"],
+               "publishedAt": "2020-01-01T00:00:00Z"}, "status": {**fake.videos_db["vid0"]["status"], "privacyStatus": "unlisted"}}
+        fake.videos_db = {"old0": old, **fake.videos_db}  # 지난 묶음의 회원 영상 (같은 파일 이름 1.mp4, 일부공개)
+        fake.videos_db["vid1"]["fileDetails"] = {"fileName": "3.mp4"}  # 3.mp4 초안이 2개
+        steps.build_excel(ui)
+        steps.fill_all(ui)
+        rows = core.read_rows()
+        assert rows[0]["영상ID"] == "vid0" and fake.videos_db["old0"]["snippet"]["title"].startswith("[숨겨진")
+        assert "2개" in rows[2]["오류"] and rows[2]["상태"] == "", rows[2]
+        assert "못 찾았" in rows[1]["오류"]
+        rows[1]["영상ID"] = "pub"
+        fake.videos_db["pub"] = {**fake.videos_db["vid2"], "id": "pub", "fileDetails": {"fileName": "2.mp4"},
+                                 "status": {"privacyStatus": "public"}}
+        core.write_rows(rows)
+        steps.fill_all(ui)
+        assert "이미 공개" in core.read_rows()[1]["오류"] and fake.videos_db["pub"]["status"] == {"privacyStatus": "public"}
+
+
+def test_rerun_after_title_edit_and_excel_lock():
+    """썸네일 실패 뒤 제목을 고쳐 다시 실행해도 제목이 한 번만, 엑셀이 잠기면 물어보고 다시 저장."""
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        steps.build_excel(ui)
+        real_set = fake.set
+        fake.set = lambda videoId, media_body: Call(lambda: (_ for _ in ()).throw(RuntimeError("썸네일 실패")))
+        try:
+            steps.fill_all(ui)
+        except steps.Stop:  # 3번 연속 실패
+            pass
+        rows = core.read_rows()
+        assert [r["상태"] for r in rows] == ["", "", ""] and fake.videos_db["vid0"]["snippet"]["title"].count("명언 1") == 1
+        rows[0]["제목"] = "다시 고친 제목"
+        core.write_rows(rows)
+        fake.set = real_set
+        writes, real_write = [], core.write_rows
+
+        def flaky(rows_, *a):
+            writes.append(1)
+            if len(writes) == 3:  # 진행 중 한 번 엑셀이 열려 있었다고 치기
+                raise core.ExcelLocked("열려 있음")
+            return real_write(rows_, *a)
+        core.write_rows = flaky
+        try:
+            steps.fill_all(ui)
+        finally:
+            core.write_rows = real_write
+        assert fake.videos_db["vid0"]["snippet"]["title"] == "[숨겨진 동양사] 다시 고친 제목 l 역사 인물 l 고전 | 수면오디오북"
+        assert [r["상태"] for r in core.read_rows()] == ["댓글완료"] * 3
+        assert sorted(c[0] for c in fake.comments) == ["vid0", "vid1", "vid2"]  # 댓글 중복 없음
+        assert (core.BACKUP_DIR / "영상" / "vid0.json").exists()
+
+
+def test_schedule_checks():
+    """예약 시간 겹침, 이미 예약된 시간, 예약 확인 실패, 파일 옮기기 실패는 각각 알리고 계속."""
+    with tempfile.TemporaryDirectory() as d:
+        ui = UI()
+        setup(d)
+        steps.build_excel(ui)
+        steps.fill_all(ui)
+        rows = core.read_rows()
+        rows[1]["예약일시"] = rows[0]["예약일시"]
+        core.write_rows(rows)
+        real_move = core.move_done
+        core.move_done = lambda r: (_ for _ in ()).throw(PermissionError("파일 사용 중"))
+        try:
+            steps.schedule_all(ui)
+        finally:
+            core.move_done = real_move
+        rows = core.read_rows()
+        assert "같습니다" in rows[0]["오류"] and "같습니다" in rows[1]["오류"]
+        assert rows[2]["상태"] == "완료(회원 직접설정)" and (core.VIDEO_DIR / rows[2]["파일"]).exists()
+        steps.build_excel(ui)  # 다음에 누를 때 못 옮긴 파일을 다시 옮긴다
+        assert not (core.VIDEO_DIR / rows[2]["파일"]).exists()
+
+
+def test_status_summary_and_kids():
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        cfg = core.load_config()
+        cfg["channels"][0]["kids"] = "예"
+        core.save_config(cfg)
+        steps.build_excel(ui)
+        assert "대기 3" in steps.status_summary(core.read_rows(), cfg) and "2. 정보" in steps.status_summary(core.read_rows(), cfg)
+        steps.fill_all(ui)
+        assert fake.comments == [] and any("아동용" in m for m in ui.logs)
+        assert "3. 고정" in steps.status_summary(core.read_rows(), cfg)
 
 
 if __name__ == "__main__":

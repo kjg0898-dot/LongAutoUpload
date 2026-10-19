@@ -194,9 +194,9 @@ def _find_video(ui, client, r, by_id, recent, used):
         return cands[0]
     if not cands:
         raise LookupError("Studio에서 이 파일의 초안을 못 찾았습니다. 업로드가 끝났는지 확인하거나, "
-                          "Studio 주소의 영상ID를 엑셀 '영상ID' 칸에 넣고 다시 눌러주세요.")
+                          "영상 주소(https://youtu.be/… 등)를 엑셀 '영상ID' 칸에 붙여넣고 다시 눌러주세요.")
     raise LookupError(f"같은 파일 이름의 초안이 {len(cands)}개라 어느 것인지 모릅니다. "
-                      "Studio 주소의 영상ID를 엑셀 '영상ID' 칸에 넣어주세요.")
+                      "영상 주소(https://youtu.be/… 등)를 엑셀 '영상ID' 칸에 붙여넣어주세요.")
 
 
 def _compose(ch, r, original):

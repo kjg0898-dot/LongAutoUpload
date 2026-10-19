@@ -50,6 +50,14 @@ MEMBER_TODO = "회원 설정 필요"  # API로 못 하는 회원 전용 공개�
 DONE_STATES = ("예약완료", MEMBER_TODO, "완료(회원 직접설정)")
 
 
+def video_id(text):
+    """영상ID 칸·입력: 주소를 통째로 붙여넣어도 ID만 뽑는다.
+    youtu.be/ID, youtube.com/watch?v=ID, studio.youtube.com/video/ID/edit, /shorts/ID, /live/ID 모두."""
+    text = str(text or "").strip()
+    m = re.search(r"(?:[?&]v=|youtu\.be/|/video/|/shorts/|/live/|/embed/)([A-Za-z0-9_-]{11})", text)
+    return m[1] if m else text
+
+
 def is_member(value):
     """회원우선 칸: O·예·Y만 '예'. 'X'나 '아니요'를 적어도 예로 치지 않게."""
     return str(value).strip().lower() in ("o", "ㅇ", "○", "●", "예", "y", "yes", "v", "✓", "true", "1")
@@ -504,6 +512,7 @@ def read_rows():
     for values in ws.iter_rows(min_row=2, values_only=True):
         r = {col: _cell(values[head.index(col)]) if col in head and head.index(col) < len(values) else ""
              for col in COLUMNS}
+        r["영상ID"] = video_id(r["영상ID"])
         if r["파일"]:
             rows.append(r)
     return rows

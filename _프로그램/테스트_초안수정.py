@@ -35,8 +35,9 @@ def main():
             f"파일명={v.get('fileDetails', {}).get('fileName', '(없음)')} | {v['snippet']['title']}")
 
     log("\n※ 예약·공개된 영상 말고, Studio에 올리기만 한 '초안'으로 해주세요.")
-    log("   Studio에서 초안을 열면 주소가 studio.youtube.com/video/<영상ID>/edit 입니다.")
-    vid = input("초안의 영상ID를 붙여넣고 엔터: ").strip()
+    log("   영상 주소(https://youtu.be/…, Studio 주소 등)를 통째로 붙여넣어도 됩니다.")
+    import core
+    vid = core.video_id(input("초안의 영상 주소나 ID를 붙여넣고 엔터: "))
     log(f"영상ID: {vid}")
     log(f"확인1) 초안이 위 목록에 있음: {'예' if vid in {v['id'] for v in recent} else '아니요'}")
     found = yt.get_videos(client, [vid])

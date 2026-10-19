@@ -295,6 +295,14 @@ def test_update_keeps_private_files():
         assert update.apply(buf.getvalue(), root) == 0  # 두 번째는 바뀔 것 없음
 
 
+def test_video_id():
+    for text in ("https://youtu.be/r5zy1xVJTwM", "youtu.be/r5zy1xVJTwM?si=abc", "https://www.youtube.com/watch?v=r5zy1xVJTwM&t=3",
+                 "https://studio.youtube.com/video/r5zy1xVJTwM/edit", "https://youtube.com/shorts/r5zy1xVJTwM",
+                 " r5zy1xVJTwM "):
+        assert core.video_id(text) == "r5zy1xVJTwM", text
+    assert core.video_id("") == ""
+
+
 def test_overrides():
     ch = {**core.DEFAULT_CHANNEL}
     assert core.overrides(ch) == ({}, {})  # 기본값은 아무것도 건드리지 않음

@@ -49,7 +49,7 @@ def main():
     def get():
         return yt.get_videos(client, [vid])[0]
 
-    def wait_for(check, tries=(0, 5, 10, 15, 30)):
+    def wait_for(check, tries=(0, 5, 10, 15, 30, 30)):
         """YouTube가 수정을 늦게 보여줄 수 있어 몇 번 다시 읽는다. (맞았는지, 마지막으로 읽은 영상, 걸린 초)"""
         spent = 0
         for t in tries:
@@ -85,7 +85,8 @@ def main():
     try:
         yt.update_video(client, video, {"title": new_title, "description": new_desc, "tags": new_tags},
                         {"privacyStatus": "unlisted"})
-        good, v, t = wait_for(lambda v: v["snippet"]["title"] == new_title and v["status"]["privacyStatus"] == "unlisted")
+        good, v, t = wait_for(lambda v: v["snippet"]["title"] == new_title and v["status"]["privacyStatus"] == "unlisted"
+                              and "전체기능테스트" in v["snippet"].get("tags", []))
         ok("제목", v["snippet"]["title"] == new_title, v["snippet"]["title"])
         ok("설명", v["snippet"].get("description", "").startswith("전체기능 테스트 설명"),
            v["snippet"].get("description", "")[:80].replace("\n", " / "))
@@ -102,13 +103,15 @@ def main():
     except Exception as e:
         ok("썸네일 올리기", False, yt.error_text(e) + " (휴대폰 인증이 안 된 채널이면 썸네일을 못 바꿉니다)")
 
-    log("\n[D] 설정에서 바꿀 수 있는 항목 (카테고리 교육, AI 합성 표시 예, 퍼가기 안 함)")
+    category = "22" if s.get("categoryId") == "27" else "27"  # 원래와 다른 값으로 바꿔야 반영됐는지 알 수 있다
+    log(f"\n[D] 설정에서 바꿀 수 있는 항목 (카테고리 {category}, AI 합성 표시 예, 퍼가기 안 함)")
     try:
         time.sleep(5)
-        yt.update_video(client, get(), {"categoryId": "27"},
+        yt.update_video(client, get(), {"categoryId": category},
                         {"containsSyntheticMedia": True, "embeddable": False})
-        good, v, t = wait_for(lambda v: v["snippet"].get("categoryId") == "27")
-        ok("카테고리", v["snippet"].get("categoryId") == "27", v["snippet"].get("categoryId"))
+        good, v, t = wait_for(lambda v: v["snippet"].get("categoryId") == category
+                              and v["status"].get("containsSyntheticMedia") is True and v["status"].get("embeddable") is False)
+        ok("카테고리", v["snippet"].get("categoryId") == category, f"{v['snippet'].get('categoryId')} / 반영까지 약 {t}초")
         ok("AI 합성 표시", v["status"].get("containsSyntheticMedia") is True, str(v["status"].get("containsSyntheticMedia")))
         ok("퍼가기", v["status"].get("embeddable") is False, str(v["status"].get("embeddable")))
     except Exception as e:
@@ -119,7 +122,14 @@ def main():
     try:
         playlist = yt.execute(client.playlists().insert(part="snippet,status", body={
             "snippet": {"title": "LongAutoUpload 테스트 (지워도 됨)"}, "status": {"privacyStatus": "private"}}))["id"]
-        yt.add_to_playlist(client, playlist, vid)
+        for t in (5, 10, 15, 30):  # 방금 만든 재생목록은 YouTube가 알아보는 데 시간이 걸린다
+            time.sleep(t)
+            try:
+                yt.add_to_playlist(client, playlist, vid)
+                break
+            except Exception as e:
+                if "playlistNotFound" not in yt.error_text(e) or t == 30:
+                    raise
         items = yt.execute(client.playlistItems().list(part="id", playlistId=playlist, videoId=vid))["items"]
         ok("재생목록에 넣기", bool(items))
     except Exception as e:

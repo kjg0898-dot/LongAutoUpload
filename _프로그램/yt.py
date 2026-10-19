@@ -153,8 +153,8 @@ def set_thumbnail(yt, video_id, path):
 def add_to_playlist(yt, playlist_id, video_id):
     found = execute(yt.playlistItems().list(part="id", playlistId=playlist_id, videoId=video_id))["items"]
     if not found:
-        execute(yt.playlistItems().insert(part="snippet", body={"snippet": {
-            "playlistId": playlist_id, "resourceId": {"kind": "youtube#video", "videoId": video_id}}}))
+        execute(yt.playlistItems().insert(part="snippet", body={"snippet": {  # 서버 오류로 다시 넣으면 두 번 들어갈 수 있음
+            "playlistId": playlist_id, "resourceId": {"kind": "youtube#video", "videoId": video_id}}}), retry=(409,))
 
 
 def post_comment(yt, video_id, text):

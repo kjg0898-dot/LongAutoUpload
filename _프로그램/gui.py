@@ -311,6 +311,8 @@ class Settings:
         ttk.Separator(form).grid(row=n + 1, column=0, columnspan=2, sticky="ew", pady=8)
         self.max_fails = tk.StringVar(value=str(self.cfg["max_fails"]))
         self.mode = tk.StringVar(value=self.cfg["mode"])
+        for var in (self.max_fails, self.mode):
+            var.trace_add("write", lambda *a: setattr(self, "saved", False))
         ttk.Label(form, text="연속 실패 몇 번이면 멈춤").grid(row=n + 2, column=0, sticky="w")
         ttk.Spinbox(form, from_=1, to=20, textvariable=self.max_fails, width=5).grid(row=n + 2, column=1, sticky="w")
         ttk.Label(form, text="진행 방식").grid(row=n + 3, column=0, sticky="w")
@@ -326,8 +328,8 @@ class Settings:
             old_name = ch["name"]
             for key, var in self.vars.items():
                 ch[key] = var.get().strip() if isinstance(var.get(), str) else var.get()
-            if ch["folder"] == old_name and ch["name"] != old_name:
-                ch["folder"] = ch["name"]  # 폴더 이름을 따로 안 바꿨으면 채널 이름을 따라간다
+            if ch["folder"] == old_name and ch["name"] != old_name and not core.channel_dirs({**ch, "folder": old_name}):
+                ch["folder"] = ch["name"]  # 폴더 이름을 따로 안 바꿨고 그 폴더로 진행 중인 묶음이 없으면 이름을 따라간다
 
     def refresh(self, index):
         self.listbox.delete(0, "end")
@@ -388,9 +390,20 @@ class Settings:
             import yt
             client = yt.build_client(yt.login(ch["key"], interactive=True, fresh=True))
             ch["channel_id"], ch["channel_title"] = yt.whoami(client)
-            core.save_config(self.cfg)
+            disk = core.load_config()  # 창에서 아직 저장 안 한 다른 수정은 건드리지 않는다
+            same = next((c for c in disk["channels"] if c["key"] == ch["key"]), None)
+            if same:
+                same["channel_id"], same["channel_title"] = ch["channel_id"], ch["channel_title"]
+                core.save_config(disk)
+            else:
+                app.log(f"[{ch['name']}] 새 채널이라 설정 창에서 '저장'을 눌러야 로그인이 기록됩니다.")
             app.log(f"[{ch['name']}] 로그인 완료: YouTube 채널 '{ch['channel_title']}'")
-            app.later(lambda: self.win.winfo_exists() and self.refresh(self.cur or 0))
+
+            def show():
+                if self.win.winfo_exists():
+                    self.commit()
+                    self.refresh(self.cur or 0)
+            app.later(show)
         self.app.run(work, "로그인")
 
     def save(self):

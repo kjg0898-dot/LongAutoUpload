@@ -206,12 +206,13 @@ def test_excel_safety():
         wb.active = 1  # 사용자가 다른 시트를 보고 저장
         wb.save(core.EXCEL)
         rows = core.read_rows()
-        assert rows[0]["제목"] == "제목" and rows[0]["예약일시"] == "2026-10-21"
-        try:
-            core.parse_dt(rows[0]["예약일시"])
-            raise AssertionError
-        except ValueError as e:
-            assert "형식" in str(e)
+        assert rows[0]["제목"] == "제목" and rows[0]["예약일시"] == "2026-10-21 00:00"  # 4단계에서 공개 시간과 다르다고 확인
+        for bad in ("11월 3일 18시", "2026-10-21"):
+            try:
+                core.parse_dt(bad)
+                raise AssertionError(bad)
+            except ValueError as e:
+                assert "형식" in str(e)
         core.write_rows(rows)
         assert openpyxl.load_workbook(core.EXCEL)["메모"]["A1"].value == "내 메모"
         assert not list(Path(d).glob("~*"))  # 임시 파일이 남지 않음

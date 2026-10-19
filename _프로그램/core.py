@@ -440,8 +440,8 @@ class ExcelLocked(PermissionError):
 def _cell(v):
     if v is None:
         return ""
-    if isinstance(v, datetime):  # 엑셀이 날짜로 바꾼 칸. 시간이 없으면(00:00) 형식 오류로 알리게 날짜만 남긴다
-        return v.strftime("%Y-%m-%d") if (v.hour, v.minute) == (0, 0) else fmt_dt(parse_dt(v))
+    if isinstance(v, datetime):  # 엑셀이 날짜로 바꾼 칸 (시간 없이 날짜만이면 00:00 → 4단계에서 공개 시간과 다르다고 확인)
+        return fmt_dt(parse_dt(v))
     if isinstance(v, float) and v.is_integer():
         return str(int(v))
     return str(v).strip()

@@ -82,7 +82,7 @@ class FakeYouTube:
 
 class UI:
     def __init__(self):
-        self.logs, self.alerts = [], []
+        self.logs, self.alerts, self.asked, self.answer = [], [], [], True
 
     def log(self, m):
         self.logs.append(m)
@@ -94,7 +94,8 @@ class UI:
         self.logs.append(m)
 
     def ask(self, q):
-        return True
+        self.asked.append(q)
+        return self.answer(q) if callable(self.answer) else self.answer
 
 
 def setup(d):
@@ -295,6 +296,37 @@ def test_status_summary_and_kids():
         steps.fill_all(ui)
         assert fake.comments == [] and any("아동용" in m for m in ui.logs)
         assert "3. 고정" in steps.status_summary(core.read_rows(), cfg)
+
+
+def test_excel_open_and_off_slot_time():
+    """엑셀이 열려 있으면 닫을 때까지 기다렸다가 (닫으며 저장한 수정을) 읽고, 공개 시간과 다른 예약일시는 물어본다."""
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        steps.build_excel(ui)
+        steps.fill_all(ui)
+        rows = core.read_rows()
+        rows[0]["예약일시"] = "2030-01-02 00:00"  # 날짜만 적어 자정이 된 경우 (수요일 00:00)
+        core.write_rows(rows)
+        locked = [True]
+
+        def fake_open(path, mode="r", *a, **k):
+            if locked and mode == "r+b":
+                locked.pop()
+                rows[1]["예약일시"] = "2030-01-04 18:00"  # 사용자가 엑셀을 닫으며 저장한 수정
+                core.write_rows(rows)
+                raise PermissionError
+            return open(path, mode, *a, **k)
+        steps.open = fake_open
+        ui.answer = lambda q: "다릅니다" not in q  # 공개 시간과 다른 것은 '아니요'
+        try:
+            steps.schedule_all(ui)
+        finally:
+            del steps.open
+        rows = core.read_rows()
+        assert any("엑셀이 열려" in q for q in ui.asked)
+        assert rows[0]["상태"] == "댓글완료" and "공개 요일" in rows[0]["오류"]
+        assert rows[1]["상태"] == "예약완료" and rows[1]["예약일시"] == "2030-01-04 18:00"  # 닫으며 저장한 수정이 반영됨
+        assert fake.videos_db["vid1"]["status"]["publishAt"] == "2030-01-04T09:00:00Z"
 
 
 if __name__ == "__main__":

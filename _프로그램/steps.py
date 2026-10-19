@@ -34,13 +34,27 @@ def _client(ui, ch, skipped):
     return None
 
 
+def _load(ui):
+    """엑셀이 닫힐 때까지 기다린 뒤 읽는다. 열린 채로 읽으면 사용자가 닫으면서 저장한 수정을 놓친다."""
+    while core.EXCEL.exists():
+        try:
+            open(core.EXCEL, "r+b").close()
+            break
+        except PermissionError:
+            if not ui.ask("엑셀이 열려 있습니다. 고친 내용을 저장하고 엑셀을 닫은 뒤 '예'를 눌러주세요."):
+                raise Stop("엑셀이 열려 있어서 시작하지 않았습니다.") from None
+    core.backup_excel()
+    return core.read_rows()
+
+
 def _save(ui, rows):
     """엑셀 저장. 열려 있으면 닫을 때까지 묻는다 — 진행 상황을 잃으면 댓글이 두 번 달릴 수 있어서."""
     while True:
         try:
             return core.write_rows(rows)
         except core.ExcelLocked:
-            if ui.ask("엑셀이 열려 있어서 진행 상황을 저장하지 못했습니다.\n엑셀을 닫고 '예'를 눌러주세요.\n\n"
+            if ui.ask("작업 중에 엑셀이 열려 있어서 진행 상황을 저장하지 못했습니다.\n엑셀을 (저장하지 말고) 닫고 '예'를 눌러주세요.\n"
+                      "※ 작업 중에 엑셀에서 고친 내용은 덮어써집니다.\n\n"
                       "('아니요'를 누르면 여기서 멈추고, 진행 상황은 백업 폴더에 따로 저장합니다)"):
                 continue
             path = core.BACKUP_DIR / "엑셀" / f"저장못함_{datetime.now(core.KST):%Y%m%d_%H%M%S}.xlsx"
@@ -130,8 +144,7 @@ def build_excel(ui):
     cfg = core.load_config()
     if not cfg["channels"]:
         return ui.alert("설정에서 채널을 먼저 추가해주세요.")
-    core.backup_excel()
-    old = core.read_rows()
+    old = _load(ui)
     _retry_moves(ui, old)
     rows, problems = core.build_rows(cfg, old)
     skipped = []
@@ -155,7 +168,7 @@ def build_excel(ui):
 
 
 # ---------- 2. 정보·댓글 넣기 ----------
-def _find_video(client, r, by_id, recent, used):
+def _find_video(ui, client, r, by_id, recent, used):
     """이 행의 영상. 다른 영상을 잘못 고치지 않도록 확실할 때만 돌려준다."""
     name = Path(r["파일"]).name.lower()
     if r["영상ID"]:
@@ -164,8 +177,10 @@ def _find_video(client, r, by_id, recent, used):
             raise LookupError(f"영상ID {r['영상ID']}를 이 채널에서 못 찾았습니다. 엑셀의 영상ID를 확인해주세요.")
         if r["상태"] == "" and not yt.is_untouched(video):
             raise LookupError("이 영상ID는 이미 공개됐거나 예약된 영상입니다. 엑셀의 영상ID를 확인해주세요.")
-        if yt.file_name(video) and yt.file_name(video).lower() != name:
-            raise LookupError(f"영상ID의 원본 파일({yt.file_name(video)})이 이 행의 파일과 다릅니다. 영상ID를 확인해주세요.")
+        if yt.file_name(video) and yt.file_name(video).lower() != name and not ui.ask(
+                f"영상ID {r['영상ID']}의 원본 파일은 '{yt.file_name(video)}'인데, 이 행의 파일은 '{Path(r['파일']).name}'입니다.\n"
+                f"이 영상이 맞나요? (업로드한 뒤 파일 이름을 바꿨다면 '예')"):
+            raise LookupError("영상ID의 원본 파일이 이 행의 파일과 다릅니다. 엑셀의 영상ID를 확인해주세요.")
         return video
     local = core.VIDEO_DIR / r["파일"]
     # 지난 묶음의 같은 이름 영상을 고르지 않게: 이 파일을 만든 뒤에 올라간 것만
@@ -200,9 +215,7 @@ def _compose(ch, r, original):
 
 
 def fill_all(ui):
-    cfg, rows = core.load_config(), core.read_rows()
-    core.backup_excel()
-    _save(ui, rows)  # 엑셀이 열려 있으면 여기서 먼저 알려준다
+    cfg, rows = core.load_config(), _load(ui)
     todo_all = [r for r in rows if r["상태"] in ("", "정보완료")]
     if not todo_all:
         return ui.log("2단계에서 할 영상이 없습니다. 1단계(엑셀 만들기)를 먼저 해주세요.")
@@ -221,7 +234,7 @@ def fill_all(ui):
         for r in todo:  # 사전 점검: YouTube를 고치기 전에 영상 찾기·제목 길이·썸네일을 모두 확인
             try:
                 used = {x["영상ID"] for x in rows if x is not r and x["영상ID"]}
-                video = _find_video(client, r, by_id, recent, used)
+                video = _find_video(ui, client, r, by_id, recent, used)
                 if r["상태"] == "":
                     _compose(ch, r, core.save_original(video))
                 r["영상ID"], videos[video["id"]] = video["id"], video
@@ -281,9 +294,7 @@ def open_tabs(urls):
 def schedule_all(ui):
     if not ui.ask("고정(수창 채널은 광고 설문까지)을 모두 마치셨나요?\n예를 누르면 예약을 겁니다."):
         return
-    cfg, rows = core.load_config(), core.read_rows()
-    core.backup_excel()
-    _save(ui, rows)
+    cfg, rows = core.load_config(), _load(ui)
     failed, skipped, manual = [], [], []
     for ch in cfg["channels"]:
         todo = [r for r in rows if r["채널"] == ch["name"] and r["상태"] == "댓글완료"]
@@ -307,6 +318,7 @@ def schedule_all(ui):
             except ValueError:
                 pass
         videos = {v["id"]: v for v in yt.get_videos(client, [r["영상ID"] for r in todo if r["영상ID"]])}
+        slots = set(core.parse_slots(ch["slots"], ch["name"]))
 
         def work(r):
             when = core.parse_dt(r["예약일시"])
@@ -316,6 +328,9 @@ def schedule_all(ui):
                 raise ValueError(f"같은 채널의 다른 영상과 예약일시({r['예약일시']})가 같습니다. 엑셀에서 고쳐주세요.")
             if taken.get(when, r["영상ID"]) != r["영상ID"]:
                 raise ValueError(f"{r['예약일시']}에 이미 다른 영상이 예약돼 있습니다. 엑셀에서 고쳐주세요.")
+            if (when.weekday(), when.hour, when.minute) not in slots and not ui.ask(
+                    f"[{r['채널']}] {r['파일']}\n예약일시 {r['예약일시']}가 채널의 공개 요일·시간({ch['slots']})과 다릅니다.\n그대로 예약할까요?"):
+                raise ValueError(f"예약일시({r['예약일시']})가 채널의 공개 요일·시간과 달라 건너뜀. 엑셀에서 확인해주세요.")
             if core.is_member(r["회원우선"]):
                 manual.append(r)  # API에는 회원 전용 공개가 없어서 사용자가 직접 설정한다
                 r["상태"] = "완료(회원 직접설정)"

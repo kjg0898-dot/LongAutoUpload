@@ -1,0 +1,23 @@
+# 코드가 바뀔 때마다 다운로드용 LongAutoUpload.zip 을 새로 만들어 '다운로드' 릴리스에 올린다.
+# zip 안에 폴더 없이 파일만 넣어서, 윈도우 '압축 풀기'를 하면 LongAutoUpload 폴더 하나가 생긴다.
+name: 다운로드용 ZIP
+on:
+  push:
+    branches: [claude/stoic-carson-0kzrhq, main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ZIP 만들기
+        run: git archive --format=zip -o LongAutoUpload.zip HEAD -- . ':!.github' ':!.gitignore'
+      - name: 릴리스에 올리기
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view download >/dev/null 2>&1 || gh release create download --title "다운로드" \
+            --notes "LongAutoUpload.zip 을 받아 압축을 풀면 LongAutoUpload 폴더가 생깁니다. 이후 새 버전은 프로그램의 '업데이트' 버튼으로."
+          gh release upload download LongAutoUpload.zip --clobber

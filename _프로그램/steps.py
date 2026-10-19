@@ -1,5 +1,6 @@
 """버튼 하나 = 단계 하나. ui는 log(글), ask(질문)->bool, alert(경고), notify(끝났을 때 알림)을 가진 객체."""
 import math
+import time
 import webbrowser
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -361,12 +362,21 @@ def schedule_all(ui):
         failed += _loop(ui, cfg, rows, todo, work)
         done = [r for r in todo if r["상태"] == "예약완료"]
         if done:  # 예약이 실제로 걸렸는지 다시 읽어 확인 (50개당 할당량 1)
-            check = {v["id"]: v for v in yt.get_videos(client, [r["영상ID"] for r in done])}
-            for r in done:
+            def wrong(r, check):
                 st = check.get(r["영상ID"], {}).get("status", {})
-                if st.get("privacyStatus") != "private" or yt.parse_dt_utc(st.get("publishAt")) != core.parse_dt(r["예약일시"], slot_list):
-                    r["오류"] = f"예약 확인 실패: YouTube에는 {st.get('privacyStatus')} / {st.get('publishAt')} 로 돼 있음"
-                    failed.append(r)
+                return st.get("privacyStatus") != "private" or \
+                    yt.parse_dt_utc(st.get("publishAt")) != core.parse_dt(r["예약일시"], slot_list)
+            bad = done
+            for wait in (0, 10, 20, 30):  # YouTube는 수정한 내용을 몇 초~수십 초 늦게 보여줄 때가 있다
+                time.sleep(wait)
+                check = {v["id"]: v for v in yt.get_videos(client, [r["영상ID"] for r in bad])}
+                bad = [r for r in bad if wrong(r, check)]
+                if not bad:
+                    break
+            for r in bad:
+                st = check.get(r["영상ID"], {}).get("status", {})
+                r["오류"] = f"예약 확인 실패: YouTube에는 {st.get('privacyStatus')} / {st.get('publishAt')} 로 돼 있음. Studio에서 확인해주세요"
+                failed.append(r)
             _save(ui, rows)
     _retry_moves(ui, rows)
     if manual:

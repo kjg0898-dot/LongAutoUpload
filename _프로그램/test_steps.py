@@ -356,6 +356,32 @@ def test_persona_fixes():
         assert rows[0]["예약일시"] == "2030-01-02 18:00" and rows[0]["상태"] == "예약완료"
 
 
+def test_schedule_verify_waits_for_delayed_read():
+    """YouTube가 예약을 늦게 보여줘도 실패로 치지 않고, 끝까지 다르면 실패로 알린다."""
+    import copy
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        steps.build_excel(ui)
+        steps.fill_all(ui)
+        stale = {k: copy.deepcopy(v) for k, v in fake.videos_db.items()}  # 예약 전 모습
+        reads, real_list = [0], fake.list
+
+        def delayed(part, id=None, **k):
+            if id and fake.updates and fake.updates[-1].get("status", {}).get("publishAt"):
+                reads[0] += 1
+                if reads[0] <= 2:  # 예약 직후 두 번은 옛 모습
+                    return Call(lambda: {"items": [stale[v] for v in id.split(",")]})
+            return real_list(part, id=id, **k)
+        fake.list = delayed
+        real_sleep, steps.time.sleep = steps.time.sleep, lambda s: None
+        try:
+            steps.schedule_all(ui)
+        finally:
+            steps.time.sleep = real_sleep
+        rows = core.read_rows()
+        assert [r["상태"] for r in rows[:2]] == ["예약완료", "예약완료"] and not rows[0]["오류"], rows
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

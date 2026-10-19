@@ -133,6 +133,33 @@ def test_seo_batch_folder():
         assert (batch / "고전").exists()  # 다른 채널 폴더는 그대로
 
 
+def test_persona_messy_folder():
+    """사용자 역할 검토에서 나온 경우: 대본 txt, 복사본·날짜가 붙은 썸네일, 제목 이름 썸네일, 비슷한 이름의 썸네일."""
+    with tempfile.TemporaryDirectory() as d:
+        core.VIDEO_DIR = Path(d) / "영상"
+        b = core.VIDEO_DIR / "1" / "동양사"
+        for sub in ("seo", "썸네일", "대본"):
+            (b / sub).mkdir(parents=True)
+        (b / "seo" / "seo.txt").write_text(SEO, "utf-8")
+        (b / "대본" / "숨겨진동양사이야기_1_대본.txt").write_text("제목: 1화 대본\n[본문]\n옛날 옛적에", "utf-8")
+        (b / "숨겨진동양사이야기_1_대본.txt").write_text("댓글: 대본 줄", "utf-8")  # 대본이 밖에 있어도
+        (b / "설명만.txt").write_text("[본문]\n제목 줄 없는 메모", "utf-8")  # 제목 없는 메모장도 오류 없이
+        for n in (1, 2):
+            (b / f"숨겨진동양사이야기_{n}_내보내기.mp4").write_bytes(b"v")
+        (b / "썸네일" / "썸네일 1 (1).png").write_bytes(b"i")  # 윈도우 복사본 표시
+        (b / "썸네일" / "10월19일 썸네일2.png").write_bytes(b"i")  # 날짜가 붙은 이름
+        pairs = core.scan_channel(b)
+        assert [(e and e["title"], t and t.name) for _, e, t in pairs] == [
+            ("둘째 후보", "썸네일 1 (1).png"), ("두 번째 영상 제목", "10월19일 썸네일2.png")], pairs
+
+        for f in (b / "썸네일").iterdir():
+            f.unlink()
+        (b / "썸네일" / "숨겨진동양사이야기_1_내보내기.png").write_bytes(b"i")  # 1번과 정확히 같은 이름
+        (b / "썸네일" / "두 번째 영상.png").write_bytes(b"i")  # 2번 제목으로 된 이름
+        pairs = core.scan_channel(b)
+        assert [t and t.name for _, _, t in pairs] == ["숨겨진동양사이야기_1_내보내기.png", "두 번째 영상.png"], pairs
+
+
 def test_slots():
     slots = core.parse_slots("월 18:00, 수요일 18:00, 금 20:30")
     assert slots == [(0, 18, 0), (2, 18, 0), (4, 20, 30)]
@@ -206,13 +233,17 @@ def test_excel_safety():
         wb.active = 1  # 사용자가 다른 시트를 보고 저장
         wb.save(core.EXCEL)
         rows = core.read_rows()
-        assert rows[0]["제목"] == "제목" and rows[0]["예약일시"] == "2026-10-21 00:00"  # 4단계에서 공개 시간과 다르다고 확인
-        for bad in ("11월 3일 18시", "2026-10-21"):
+        assert rows[0]["제목"] == "제목" and rows[0]["예약일시"] == "2026-10-21"  # 날짜만 → 그 요일 공개 시간으로
+        slots = core.parse_slots("월 12:15, 수 12:15, 토 12:15")
+        assert core.fmt_dt(core.parse_dt("2026-10-21", slots)) == "2026-10-21 12:15"  # 수요일
+        assert core.fmt_dt(core.parse_dt("2026.11.25 12:15")) == "2026-11-25 12:15"
+        assert core.fmt_dt(core.parse_dt("2026/11/25 9:05")) == "2026-11-25 09:05"
+        for bad, word in (("11월 3일 18시", "형식"), ("2026-10-21", "형식"), ("2026-10-22", "공개 요일"), ("2026-13-01 10:00", "형식")):
             try:
-                core.parse_dt(bad)
+                core.parse_dt(bad, slots if bad == "2026-10-22" else None)
                 raise AssertionError(bad)
             except ValueError as e:
-                assert "형식" in str(e)
+                assert word in str(e), (bad, e)
         core.write_rows(rows)
         assert openpyxl.load_workbook(core.EXCEL)["메모"]["A1"].value == "내 메모"
         assert not list(Path(d).glob("~*"))  # 임시 파일이 남지 않음

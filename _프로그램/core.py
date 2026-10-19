@@ -45,8 +45,9 @@ DEFAULT_CONFIG = {"channels": [], "max_fails": 3, "mode": "한 번에 전체"}
 # 사용자가 고치는 칸(제목·회원우선·예약일시·영상ID)을 앞쪽에
 COLUMNS = ["채널", "파일", "제목", "회원우선", "예약일시", "상태", "오류", "영상ID",
            "제목후보", "설명", "태그", "고정댓글", "메모장", "썸네일"]
-EDITABLE = ("제목", "회원우선", "예약일시", "영상ID")
-DONE_STATES = ("예약완료", "완료(회원 직접설정)")
+EDITABLE = ("제목", "회원우선", "예약일시", "영상ID", "썸네일")  # 썸네일: 없이 올리려면 "없음"
+MEMBER_TODO = "회원 설정 필요"  # API로 못 하는 회원 전용 공개를 사용자가 Studio에서 해야 함
+DONE_STATES = ("예약완료", MEMBER_TODO, "완료(회원 직접설정)")
 
 
 def is_member(value):
@@ -162,17 +163,24 @@ def parse_seo(text):
     return out
 
 
+SKIP_TXT = re.compile(r"대본|스크립트|script|자막|나레이션|내레이션|프롬프트|prompt", re.I)
+
+
 def load_entries(memo_paths):
-    """메모장들 → 영상 하나당 항목 하나. SEO 형식이면 한 파일에 여러 항목."""
-    entries = []
+    """메모장들 → 영상 하나당 항목 하나. SEO 형식이면 한 파일에 여러 항목.
+    대본·자막 같은 txt는 읽지 않고, SEO 형식 파일이 하나라도 있으면 일반 메모장은 쓰지 않는다
+    (대본에 '제목:' 같은 줄이 있어도 SEO 대신 올라가지 않게)."""
+    seo_entries, simple = [], []
     for path in memo_paths:
+        if any(SKIP_TXT.search(part) for part in Path(path).parts[-3:]):
+            continue
         text = read_text(path)
         seo = parse_seo(text)
         if seo:
-            entries += [e | {"src": path} for e in seo]
+            seo_entries += [e | {"src": path} for e in seo]
         elif info := parse_memo(text):
-            entries.append({"num": None, "orig": "", "titles": []} | info | {"src": path})
-    return entries
+            simple.append({"num": None, "orig": "", "titles": [], "title": ""} | info | {"src": path})
+    return seo_entries or simple
 
 
 def parse_tags(text):
@@ -220,6 +228,8 @@ def merge_tags(existing, new, mode):
 def check_text(title, desc):
     if not title:
         raise ValueError("제목이 비어 있습니다.")
+    if "\n" in title:
+        raise ValueError(f"제목에 줄바꿈이 있습니다: {title[:40]}…")
     if len(title) > 100:
         raise ValueError(f"제목이 100자를 넘습니다 ({len(title)}자): {title}")
     if len(desc.encode("utf-8")) > 5000:
@@ -243,8 +253,19 @@ def _sim(a, b):
 
 
 def _nums(path):
-    """파일 이름 속 번호 (예: 숨겨진동양사이야기_6_내보내기 → {6}). 날짜 같은 큰 숫자는 뺀다."""
-    return {int(n) for n in re.findall(r"\d+", Path(path).stem) if int(n) < 1000}
+    """파일 이름 속 번호 (예: 숨겨진동양사이야기_6_내보내기 → {6}).
+    윈도우 복사본 표시 '(1)', '10월19일' 같은 날짜, 큰 숫자는 뺀다."""
+    stem = re.sub(r"\(\d+\)|\d{1,2}월\s*\d{1,2}일|\d{2,4}[-_.]\d{1,2}[-_.]\d{1,2}", " ", Path(path).stem)
+    return {int(n) for n in re.findall(r"\d+", stem) if int(n) < 1000}
+
+
+def _title_score(stem, entry):
+    """썸네일·영상 이름과 메모장 제목이 얼마나 비슷한지. 이름이 제목 안에 통째로 들어 있으면 1."""
+    texts = [t for t in [entry.get("orig", ""), entry.get("title", ""), *entry.get("titles", [])] if t]
+    n = _norm(stem)
+    if len(n) >= 4 and any(n in _norm(t) for t in texts):
+        return 1.0
+    return max((_sim(stem, t) for t in texts), default=0)
 
 
 def _find_pair(video, candidates, videos):
@@ -264,32 +285,32 @@ def _by_number(num, items, key):
 
 
 def _match_entry(video, entries, videos):
+    """(항목, 확실함) — 확실함: 같은 이름·같은 번호면 True, 비슷한 이름이면 False."""
     simple = [e for e in entries if e["num"] is None]
     src = _find_pair(video, [e["src"] for e in simple], videos)
     if src:
-        return next(e for e in simple if e["src"] == src)
+        return next(e for e in simple if e["src"] == src), src.stem.lower() == video.stem.lower()
     nums = _nums(video)
     if hit := _by_number(next(iter(nums)) if len(nums) == 1 else None, entries, lambda e: {e["num"]}):
-        return hit
-    score = lambda e: max(_sim(video.stem, t) for t in [e["orig"], e["title"], *e["titles"]])  # noqa: E731
-    best = max(entries, key=score, default=None)
-    return best if best and score(best) >= 0.6 else None
+        return hit, True
+    best = max(entries, key=lambda e: _title_score(video.stem, e), default=None)
+    return (best, False) if best and _title_score(video.stem, best) >= 0.6 else (None, False)
 
 
 def _match_thumb(video, entry, images, videos):
+    """(썸네일, 확실함)."""
     same = [i for i in images if i.stem.lower() == video.stem.lower()]
     if same:
-        return same[0]
+        return same[0], True
     nums = _nums(video)
     num = entry["num"] if entry and entry["num"] is not None else (next(iter(nums)) if len(nums) == 1 else None)
     if hit := _by_number(num, images, _nums):
-        return hit
+        return hit, True
     if entry:  # 썸네일 이름이 제목으로 돼 있는 경우
-        score = lambda i: max(_sim(i.stem, t) for t in [entry["orig"], entry["title"], *entry["titles"]])  # noqa: E731
-        best = max(images, key=score, default=None)
-        if best and score(best) >= 0.6:
-            return best
-    return _find_pair(video, images, videos)
+        best = max(images, key=lambda i: _title_score(i.stem, entry), default=None)
+        if best and _title_score(best.stem, entry) >= 0.6:
+            return best, False
+    return _find_pair(video, images, videos), False
 
 
 def scan_channel(folder):
@@ -300,14 +321,19 @@ def scan_channel(folder):
     images = [p for p in files if p.suffix.lower() in IMAGE_EXT]
     pairs = []
     for v in videos:
-        entry = _match_entry(v, entries, videos)
-        pairs.append([v, entry, _match_thumb(v, entry, images, videos)])
-    for col in (1, 2):  # 한 메모장 항목·썸네일이 두 영상에 짝지어지면 둘 다 확인 필요로 돌린다
-        used = [id(p[col]) for p in pairs if p[col]]
-        for p in pairs:
-            if p[col] and used.count(id(p[col])) > 1:
-                p[col] = None
-    return [tuple(p) for p in pairs]
+        entry, sure_e = _match_entry(v, entries, videos)
+        thumb, sure_t = _match_thumb(v, entry, images, videos)
+        pairs.append([v, (entry, sure_e), (thumb, sure_t)])
+    for col in (1, 2):  # 한 파일이 여러 영상에 짝지어지면: 확실한 짝 하나만 남기고, 나머지(또는 확실한 짝이 여럿이면 전부)는 확인 필요
+        for item in {id(p[col][0]): p[col][0] for p in pairs if p[col][0] is not None}.values():
+            users = [p for p in pairs if p[col][0] is item]
+            if len(users) < 2:
+                continue
+            sure = [p for p in users if p[col][1]]
+            for p in users:
+                if not (len(sure) == 1 and p is sure[0]):
+                    p[col] = (None, False)
+    return [(v, e[0], t[0]) for v, e, t in pairs]
 
 
 def channel_dirs(ch):
@@ -358,15 +384,27 @@ def next_slots(after, slots, n):
     return res
 
 
-def parse_dt(value):
+def parse_dt(value, slots=None):
+    """예약일시 칸 → 시각. 날짜만 적으면(slots가 있을 때) 그 요일의 공개 시간으로."""
     if not value:
         return None
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=KST)
+    text = re.sub(r"\s+", " ", re.sub(r"(\d)[./](\d)", r"\1-\2", str(value).strip().rstrip(".")))
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})(?: (\d{1,2}):(\d{2}))?(?::\d{2})?", text)
     try:
-        return datetime.strptime(re.sub(r"\s+", " ", str(value).strip())[:16], "%Y-%m-%d %H:%M").replace(tzinfo=KST)
-    except ValueError:
-        raise ValueError(f"예약일시 형식 오류: '{value}' (예: 2026-10-21 12:15)") from None
+        if m and m[4] is not None:
+            return datetime(int(m[1]), int(m[2]), int(m[3]), int(m[4]), int(m[5]), tzinfo=KST)
+        if m and slots:
+            day = datetime(int(m[1]), int(m[2]), int(m[3]), tzinfo=KST)
+            times = [(h, mi) for wd, h, mi in slots if wd == day.weekday()]
+            if not times:
+                raise ValueError(f"예약일시 '{value}'는 공개 요일이 아닙니다. 시간까지 적어주세요 (예: {text} 12:15)")
+            return day.replace(hour=times[0][0], minute=times[0][1])
+    except ValueError as e:
+        if "공개 요일" in str(e):
+            raise
+    raise ValueError(f"예약일시 형식 오류: '{value}' (예: 2026-10-21 12:15)")
 
 
 def fmt_dt(t):
@@ -379,9 +417,10 @@ def fill_schedule(rows, ch, last_scheduled, now):
     blanks = [r for r in mine if not r["예약일시"]]
     if not blanks:
         return
+    slots = parse_slots(ch["slots"], ch["name"])
     after = max([now + timedelta(minutes=30)] + ([last_scheduled] if last_scheduled else [])
-                + [parse_dt(r["예약일시"]) for r in mine if r["예약일시"]])
-    for r, t in zip(blanks, next_slots(after, parse_slots(ch["slots"], ch["name"]), len(blanks))):
+                + [parse_dt(r["예약일시"], slots) for r in mine if r["예약일시"]])
+    for r, t in zip(blanks, next_slots(after, slots, len(blanks))):
         r["예약일시"] = fmt_dt(t)
 
 
@@ -391,7 +430,8 @@ def rel(p):
 
 
 def build_rows(cfg, old_rows):
-    """영상 폴더를 훑어 엑셀 행을 만든다. 이미 있던 행(사용자가 고친 제목 등)은 그대로 둔다."""
+    """영상 폴더를 훑어 엑셀 행을 만든다. 사용자가 고친 칸(제목·회원우선·예약일시·영상ID)은 그대로 두고,
+    아직 처리 전인 행은 메모장·썸네일을 다시 찾아 채운다 (파일을 옮기거나 이름을 고친 뒤 다시 눌러도 반영)."""
     old = {r["파일"]: r for r in old_rows}
     rows, problems, seen = [], [], set()
     for ch, folder in ((ch, d) for ch in cfg["channels"] for d in channel_dirs(ch)):
@@ -399,27 +439,30 @@ def build_rows(cfg, old_rows):
         for video, entry, thumb in scan_channel(folder):
             name = rel(video)
             seen.add(name)
-            if name in old:
-                rows.append(old[name])
-                batch_rows.append(old[name])
-                continue
             info = entry or {}
-            if not entry:
-                problems.append(f"{name}: 메모장(SEO) 내용을 못 찾음")
-            if not thumb:
-                problems.append(f"{name}: 썸네일을 못 찾음")
-            elif thumb.stat().st_size > THUMB_MAX:
-                problems.append(f"{name}: 썸네일이 2MB를 넘음 ({thumb.name})")
-            row = dict.fromkeys(COLUMNS, "") | {
-                "채널": ch["name"], "파일": name, "제목": info.get("title", ""),
-                "제목후보": "\n".join(f"{i}. {t}" for i, t in enumerate(info.get("titles", []), 1)),
-                "설명": info.get("desc", ""), "태그": info.get("tags", ""), "고정댓글": info.get("comment", ""),
-                "메모장": rel(info.get("src")), "썸네일": rel(thumb)}
+            fresh = {"제목후보": "\n".join(f"{i}. {t}" for i, t in enumerate(info.get("titles", []), 1)),
+                     "설명": info.get("desc", ""), "태그": info.get("tags", ""), "고정댓글": info.get("comment", ""),
+                     "메모장": rel(info.get("src")), "썸네일": rel(thumb)}
+            row = old.get(name) or dict.fromkeys(COLUMNS, "") | {"채널": ch["name"], "파일": name}
+            if row["상태"] == "":
+                keep_thumb = row["썸네일"] == "없음"  # 썸네일 없이 올리기로 한 영상
+                row |= fresh | ({"썸네일": "없음"} if keep_thumb else {})
+                row["제목"] = row["제목"] or info.get("title", "")
+                if not entry:
+                    problems.append(f"{name}: 메모장(SEO) 내용을 못 찾음")
+                if not row["썸네일"]:
+                    problems.append(f"{name}: 썸네일을 못 찾음 (없이 올리려면 엑셀 썸네일 칸에 '없음')")
+                elif thumb and thumb.stat().st_size > THUMB_MAX:
+                    problems.append(f"{name}: 썸네일이 2MB를 넘음 ({thumb.name})")
             rows.append(row)
             batch_rows.append(row)
         pending = [r for r in batch_rows if r["상태"] == ""]
         if ch["members"] and pending and not any(is_member(r["회원우선"]) for r in batch_rows):
             pending[-1]["회원우선"] = "O"  # 기본 규칙: 이 묶음에서 아직 처리 전인 마지막 영상
+    if VIDEO_DIR.exists():  # 채널 폴더가 아니라 묶음 폴더에 바로 둔 메모장·썸네일은 어느 채널 것인지 모른다
+        loose = [f for b in VIDEO_DIR.iterdir() if b.is_dir() for f in b.iterdir()
+                 if f.is_file() and f.suffix.lower() in IMAGE_EXT | {".txt"}]
+        problems += [f"{rel(f)}: 묶음 폴더 바로 아래 있어서 읽지 않음 → 채널 폴더 안으로 옮기세요" for f in loose]
     for r in old_rows:  # 파일을 옮기거나 이름을 바꿨어도 진행 중인 행은 남긴다 (영상ID를 잃으면 댓글이 두 번 달림)
         if r["파일"] not in seen and r["상태"] and r["상태"] not in DONE_STATES:
             rows.append(r)
@@ -440,8 +483,8 @@ class ExcelLocked(PermissionError):
 def _cell(v):
     if v is None:
         return ""
-    if isinstance(v, datetime):  # 엑셀이 날짜로 바꾼 칸 (시간 없이 날짜만이면 00:00 → 4단계에서 공개 시간과 다르다고 확인)
-        return fmt_dt(parse_dt(v))
+    if isinstance(v, datetime):  # 엑셀이 날짜로 바꾼 칸. 시간 없이 날짜만이면 날짜만 남겨 그 요일 공개 시간으로
+        return v.strftime("%Y-%m-%d") if (v.hour, v.minute) == (0, 0) else fmt_dt(parse_dt(v))
     if isinstance(v, float) and v.is_integer():
         return str(int(v))
     return str(v).strip()

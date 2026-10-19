@@ -123,9 +123,10 @@ def status_summary(rows, cfg):
         mine = [r for r in rows if r["채널"] == ch["name"]]
         if not mine:
             continue
-        c = Counter("완료" if r["상태"] in core.DONE_STATES else r["상태"] or "대기" for r in mine)
+        c = Counter(r["상태"] if r["상태"] == core.MEMBER_TODO else "완료" if r["상태"] in core.DONE_STATES
+                    else r["상태"] or "대기" for r in mine)
         errors = sum(1 for r in mine if r["오류"])
-        parts = [f"{k} {c[k]}" for k in ("대기", "정보완료", "댓글완료", "완료") if c[k]]
+        parts = [f"{k} {c[k]}" for k in ("대기", "정보완료", "댓글완료", "완료", core.MEMBER_TODO) if c[k]]
         lines.append(f"{ch['name']}: " + " · ".join(parts) + (f" · 오류 {errors}" if errors else ""))
     states = {r["상태"] for r in rows}
     if "" in states:
@@ -134,6 +135,8 @@ def status_summary(rows, cfg):
         nxt = "2. 정보·댓글 넣기 (남은 댓글)"
     elif "댓글완료" in states:
         nxt = "3. 고정 탭 열기 → 고정 → 4. 예약 걸기"
+    elif core.MEMBER_TODO in states:
+        nxt = "Studio에서 회원 전용 + 공개 예약 직접 설정 (엑셀 상태 '회원 설정 필요'인 영상) → 끝나면 다음 묶음"
     else:
         nxt = "0. 새 묶음 폴더에 파일 넣고 Studio에 업로드 → 1. 엑셀 만들기"
     return ("\n".join(lines) or "진행 중인 영상 없음") + f"\n▶ 다음 할 일: {nxt}"
@@ -203,7 +206,15 @@ def _compose(ch, r, original):
     desc = core.merge(s.get("description", ""), r["설명"], ch["desc_mode"], ch["desc_marker"], "\n\n")
     tags = core.merge_tags(s.get("tags", []), core.parse_tags(r["태그"]), ch["tags_mode"])
     core.check_text(title, desc)
-    if r["썸네일"]:
+    if not r["제목"].strip():
+        raise ValueError("엑셀의 제목 칸이 비어 있습니다.")
+    if not r["설명"].strip():
+        raise ValueError("설명이 비어 있습니다 (SEO 메모장을 못 찾음). 1단계를 다시 누르거나 엑셀 설명 칸을 채워주세요.")
+    if r["예약일시"]:
+        core.parse_dt(r["예약일시"], core.parse_slots(ch["slots"], ch["name"]))  # 형식 오류를 미리 알림
+    if not r["썸네일"]:
+        raise ValueError("썸네일을 못 찾았습니다. 썸네일을 채널 폴더에 넣고 1단계를 다시 누르거나, 없이 올리려면 썸네일 칸에 '없음'.")
+    if r["썸네일"] != "없음":
         thumb = core.VIDEO_DIR / r["썸네일"]
         if not thumb.exists():
             raise FileNotFoundError(f"썸네일 파일이 없습니다: {r['썸네일']}")
@@ -218,6 +229,8 @@ def fill_all(ui):
     cfg, rows = core.load_config(), _load(ui)
     todo_all = [r for r in rows if r["상태"] in ("", "정보완료")]
     if not todo_all:
+        if any(r["상태"] == "댓글완료" for r in rows):
+            return ui.log("정보·댓글은 모두 넣었습니다 → 3. 고정 탭 열기")
         return ui.log("2단계에서 할 영상이 없습니다. 1단계(엑셀 만들기)를 먼저 해주세요.")
     units = sum(yt.COST_FILL if r["상태"] == "" else 50 for r in todo_all)
     days = math.ceil(units / (yt.DAILY_QUOTA * 0.9))
@@ -251,7 +264,7 @@ def fill_all(ui):
             video = videos[r["영상ID"]]
             if r["상태"] == "":
                 yt.update_video(client, video, *_compose(ch, r, core.save_original(video)))
-                if r["썸네일"]:
+                if r["썸네일"] not in ("", "없음"):
                     yt.set_thumbnail(client, video["id"], core.VIDEO_DIR / r["썸네일"])
                 if ch["playlist"].strip():
                     yt.add_to_playlist(client, ch["playlist"].strip(), video["id"])
@@ -292,9 +305,11 @@ def open_tabs(urls):
 
 # ---------- 4. 예약 걸기 ----------
 def schedule_all(ui):
+    cfg, rows = core.load_config(), _load(ui)
+    if not any(r["상태"] == "댓글완료" for r in rows):
+        return ui.log("예약할 영상이 없습니다. 2단계(정보·댓글 넣기)와 3단계(고정)를 먼저 해주세요.")
     if not ui.ask("고정(수창 채널은 광고 설문까지)을 모두 마치셨나요?\n예를 누르면 예약을 겁니다."):
         return
-    cfg, rows = core.load_config(), _load(ui)
     failed, skipped, manual = [], [], []
     for ch in cfg["channels"]:
         todo = [r for r in rows if r["채널"] == ch["name"] and r["상태"] == "댓글완료"]
@@ -311,17 +326,19 @@ def schedule_all(ui):
             ui.log(f"[{ch['name']}] {e}")
             continue
         taken = {yt.parse_dt_utc(v["status"]["publishAt"]): v["id"] for v in recent if v["status"].get("publishAt")}
+        slot_list = core.parse_slots(ch["slots"], ch["name"])
+        slots = set(slot_list)
         times = Counter()
         for r in todo:
             try:
-                times[core.parse_dt(r["예약일시"])] += 1
+                times[core.parse_dt(r["예약일시"], slot_list)] += 1
             except ValueError:
                 pass
         videos = {v["id"]: v for v in yt.get_videos(client, [r["영상ID"] for r in todo if r["영상ID"]])}
-        slots = set(core.parse_slots(ch["slots"], ch["name"]))
 
         def work(r):
-            when = core.parse_dt(r["예약일시"])
+            when = core.parse_dt(r["예약일시"], slot_list)
+            r["예약일시"] = core.fmt_dt(when)  # 날짜만 적었던 칸은 실제 시간으로 채워 보여준다
             if when <= _now() + timedelta(minutes=15):
                 raise ValueError(f"예약일시({r['예약일시']})가 지났거나 너무 가깝습니다. 엑셀에서 고쳐주세요.")
             if times[when] > 1:
@@ -333,7 +350,7 @@ def schedule_all(ui):
                 raise ValueError(f"예약일시({r['예약일시']})가 채널의 공개 요일·시간과 달라 건너뜀. 엑셀에서 확인해주세요.")
             if core.is_member(r["회원우선"]):
                 manual.append(r)  # API에는 회원 전용 공개가 없어서 사용자가 직접 설정한다
-                r["상태"] = "완료(회원 직접설정)"
+                r["상태"] = core.MEMBER_TODO
             else:
                 if r["영상ID"] not in videos:
                     raise LookupError("YouTube에서 이 영상을 못 찾았습니다 (삭제됐는지 확인)")
@@ -347,7 +364,7 @@ def schedule_all(ui):
             check = {v["id"]: v for v in yt.get_videos(client, [r["영상ID"] for r in done])}
             for r in done:
                 st = check.get(r["영상ID"], {}).get("status", {})
-                if st.get("privacyStatus") != "private" or yt.parse_dt_utc(st.get("publishAt")) != core.parse_dt(r["예약일시"]):
+                if st.get("privacyStatus") != "private" or yt.parse_dt_utc(st.get("publishAt")) != core.parse_dt(r["예약일시"], slot_list):
                     r["오류"] = f"예약 확인 실패: YouTube에는 {st.get('privacyStatus')} / {st.get('publishAt')} 로 돼 있음"
                     failed.append(r)
             _save(ui, rows)

@@ -83,7 +83,7 @@ class App:
         line.pack(fill="x", pady=(4, 0))
         self.state = ttk.Label(line, text="대기 중")
         self.state.pack(side="left")
-        self.progress = ttk.Progressbar(line, mode="indeterminate", length=180)
+        self.progress = ttk.Progressbar(line, mode="determinate", length=180)
         self.progress.pack(side="right")
 
         self.text = scrolledtext.ScrolledText(root, wrap="word", font=(FONT, 10), height=16)
@@ -147,10 +147,11 @@ class App:
             b.state(["disabled"] if label else ["!disabled"])
         self.state.config(text=f"작업 중: {label}" if label else "대기 중")
         if label:
+            self.progress.config(mode="indeterminate")
             self.progress.start(15)
-        else:
+        else:  # 쉬는 동안엔 빈 막대 (움직이는 조각이 남아 작업 중처럼 보이지 않게)
             self.progress.stop()
-            self.progress["value"] = 0
+            self.progress.config(mode="determinate", value=0)
 
     def run(self, fn, label=None):
         if self.busy:
@@ -177,7 +178,7 @@ class App:
     def first_run_guide(self):
         import yt
         cfg, todo = core.load_config(), []
-        if not yt.SECRET.exists():
+        if not yt.secret_file().exists():
             todo.append("① '안내' → 구글 연동 안내대로 client_secret.json을 _프로그램 폴더에 넣기")
         if not cfg["channels"]:
             todo.append("② '설정' → 채널 추가 → 칸 채우기 → 로그인 → 저장")
@@ -216,7 +217,7 @@ class App:
     def open_help(self):
         open_path(core.PROG / "사용법.md")
         import yt
-        if not yt.SECRET.exists():
+        if not yt.secret_file().exists():
             open_path(core.PROG / "구글연동_안내.md")
 
     def open_settings(self):
@@ -280,7 +281,7 @@ class Settings:
         win.protocol("WM_DELETE_WINDOW", self.close)
         left = ttk.Frame(win, padding=8)
         left.pack(side="left", fill="y")
-        self.listbox = tk.Listbox(left, width=18, exportselection=False, font=(FONT, 10))
+        self.listbox = tk.Listbox(left, width=26, exportselection=False, font=(FONT, 10))
         self.listbox.pack(fill="y", expand=True)
         self.listbox.bind("<<ListboxSelect>>", lambda e: self.select())
         for text, cmd in (("채널 추가", self.add), ("이 채널 복제", self.duplicate), ("채널 삭제", self.remove),
@@ -306,7 +307,11 @@ class Settings:
             self.vars[key] = var
 
         n = len(FIELDS) + 1
-        ttk.Label(form, foreground="#555", text="※ '건들지 않음' = Studio 업로드 기본 설정 그대로 둠").grid(
+        ttk.Label(form, foreground="#555", justify="left", text=(
+            "※ 보통 바꿀 것: 채널 이름, 공개 요일·시간, 수익 창출·회원 체크. 나머지는 그대로 두면 됩니다.\n"
+            "※ 제목: '기준 글자 뒤' + ']' → Studio 제목 틀의 ] 바로 뒤에 들어감\n"
+            "    예) [숨겨진 동양사] ＜엑셀 제목＞ l 역사 인물 l 고전 | 수면오디오북\n"
+            "※ '건들지 않음' = Studio 업로드 기본 설정 그대로 둠")).grid(
             row=n, column=0, columnspan=2, sticky="w", pady=(6, 0))
         ttk.Separator(form).grid(row=n + 1, column=0, columnspan=2, sticky="ew", pady=8)
         self.max_fails = tk.StringVar(value=str(self.cfg["max_fails"]))
@@ -330,6 +335,7 @@ class Settings:
                 ch[key] = var.get().strip() if isinstance(var.get(), str) else var.get()
             if ch["folder"] == old_name and ch["name"] != old_name and not core.channel_dirs({**ch, "folder": old_name}):
                 ch["folder"] = ch["name"]  # 폴더 이름을 따로 안 바꿨고 그 폴더로 진행 중인 묶음이 없으면 이름을 따라간다
+                self.vars["folder"].set(ch["folder"])  # 화면 칸도 같이 (안 그러면 다음 저장 때 옛 이름으로 돌아감)
 
     def refresh(self, index):
         self.listbox.delete(0, "end")
@@ -339,6 +345,8 @@ class Settings:
         if self.cfg["channels"]:
             self.listbox.selection_set(min(index, len(self.cfg["channels"]) - 1))
             self.select()
+        else:
+            self.login_label.config(text="왼쪽 '채널 추가'를 먼저 누른 뒤 칸을 채우세요.")
 
     def select(self):
         sel = self.listbox.curselection()

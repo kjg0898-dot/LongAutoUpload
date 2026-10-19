@@ -146,7 +146,7 @@ def test_full_flow():
 
         steps.schedule_all(ui)
         rows = core.read_rows()
-        assert [r["상태"] for r in rows] == ["예약완료", "예약완료", "완료(회원 직접설정)"], rows
+        assert [r["상태"] for r in rows] == ["예약완료", "예약완료", "회원 설정 필요"], rows
         assert fake.videos_db["vid0"]["status"]["privacyStatus"] == "private"
         assert fake.videos_db["vid0"]["status"]["publishAt"].endswith("Z")
         assert fake.videos_db["vid2"]["status"]["privacyStatus"] == "unlisted"  # 회원 영상은 사용자가 직접
@@ -280,7 +280,7 @@ def test_schedule_checks():
             core.move_done = real_move
         rows = core.read_rows()
         assert "같습니다" in rows[0]["오류"] and "같습니다" in rows[1]["오류"]
-        assert rows[2]["상태"] == "완료(회원 직접설정)" and (core.VIDEO_DIR / rows[2]["파일"]).exists()
+        assert rows[2]["상태"] == "회원 설정 필요" and (core.VIDEO_DIR / rows[2]["파일"]).exists()
         steps.build_excel(ui)  # 다음에 누를 때 못 옮긴 파일을 다시 옮긴다
         assert not (core.VIDEO_DIR / rows[2]["파일"]).exists()
 
@@ -327,6 +327,33 @@ def test_excel_open_and_off_slot_time():
         assert rows[0]["상태"] == "댓글완료" and "공개 요일" in rows[0]["오류"]
         assert rows[1]["상태"] == "예약완료" and rows[1]["예약일시"] == "2030-01-04 18:00"  # 닫으며 저장한 수정이 반영됨
         assert fake.videos_db["vid1"]["status"]["publishAt"] == "2030-01-04T09:00:00Z"
+
+
+def test_persona_fixes():
+    """썸네일 없으면 2단계 점검에서 멈춤('없음'이면 통과), 할 일 없을 때 안내, 날짜만 적은 예약일시는 공개 시간으로."""
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        (core.VIDEO_DIR / "b" / "명언" / "2.jpg").unlink()
+        ui.answer = True
+        steps.schedule_all(ui)
+        assert any("예약할 영상이 없습니다" in m for m in ui.logs) and not ui.asked
+        steps.build_excel(ui)
+        assert any("2.mp4: 썸네일을 못 찾음" in a for a in ui.alerts)
+        steps.fill_all(ui)
+        rows = core.read_rows()
+        assert rows[1]["상태"] == "" and "썸네일" in rows[1]["오류"] and "vid1" not in fake.thumbs
+        rows[1]["썸네일"] = "없음"
+        rows[0]["예약일시"] = "2030-01-02"  # 수요일, 날짜만
+        core.write_rows(rows)
+        steps.build_excel(ui)  # 다시 눌러도 '없음'은 유지
+        assert core.read_rows()[1]["썸네일"] == "없음"
+        steps.fill_all(ui)
+        assert [r["상태"] for r in core.read_rows()] == ["댓글완료"] * 3 and "vid1" not in fake.thumbs
+        steps.fill_all(ui)
+        assert any("모두 넣었습니다" in m for m in ui.logs)
+        steps.schedule_all(ui)
+        rows = core.read_rows()
+        assert rows[0]["예약일시"] == "2030-01-02 18:00" and rows[0]["상태"] == "예약완료"
 
 
 if __name__ == "__main__":

@@ -6,6 +6,12 @@ from datetime import datetime, timezone
 from core import PROG, parse_dt
 
 SECRET = PROG / "client_secret.json"
+
+
+def secret_file():
+    """열쇠 파일. 윈도우가 확장자를 숨겨 이름이 client_secret.json.json 이나 client_secret(1).json 이 돼도 찾는다."""
+    found = sorted(PROG.glob("client_secret*.json"))
+    return SECRET if SECRET.exists() else found[0] if found else SECRET
 TOKENS = PROG / "토큰"
 SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
 # videos.update에 보내면 안 되는(읽기 전용) 필드
@@ -38,11 +44,11 @@ def login(key, interactive=True, fresh=False):
     if not creds or not creds.valid:
         if not interactive:
             raise NotLoggedIn
-        if not SECRET.exists():
+        if not secret_file().exists():
             raise FileNotFoundError(f"client_secret.json이 없습니다. '안내' 버튼의 구글 연동 안내대로 받아서 넣어주세요: {PROG}")
         try:
             # 매번 계정·채널 선택 화면을 띄워 원하는 채널을 고르게 한다. 5분 안에 안 끝나면 포기
-            creds = InstalledAppFlow.from_client_secrets_file(SECRET, SCOPES).run_local_server(
+            creds = InstalledAppFlow.from_client_secrets_file(secret_file(), SCOPES).run_local_server(
                 port=0, prompt="select_account consent", timeout_seconds=300)
         except Exception as e:
             raise RuntimeError(f"로그인을 마치지 못했습니다(5분이 지났거나 창을 닫음). 다시 눌러주세요. ({e})") from None

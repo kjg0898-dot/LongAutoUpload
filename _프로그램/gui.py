@@ -511,5 +511,12 @@ def main():
         messagebox.showerror("설치 실패", f"필요한 부품 설치에 실패했습니다.\n인터넷 연결을 확인해주세요.\n\n{e}")
         return
     wait.destroy()
-    App(root)
+    app = App(root)
+
+    def on_error(exc, value, tb):  # 버튼을 누르다 난 오류: 검은 창이 없어 안 보이므로 화면과 기록에 남긴다
+        import traceback
+        text = "".join(traceback.format_exception(exc, value, tb))
+        app.log(f"오류가 났습니다 (이 내용을 Claude에게 보내주세요):\n{text}")
+        messagebox.showerror("오류", f"오류가 났습니다. 기록 폴더의 오늘 날짜 파일을 Claude에게 보내주세요.\n\n{value}")
+    root.report_callback_exception = on_error
     root.mainloop()

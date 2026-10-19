@@ -4,8 +4,10 @@ import io
 import os
 import urllib.request
 import zipfile
+from pathlib import Path
 
-from core import ROOT
+# core 등 다른 파일에 기대지 않는다: 다른 파일이 망가져도 이 파일만으로 고친 버전을 받을 수 있게
+ROOT = Path(__file__).resolve().parent.parent
 
 URL = "https://codeload.github.com/kjg0898-dot/LongAutoUpload/zip/HEAD"  # 기본 브랜치의 최신 상태
 

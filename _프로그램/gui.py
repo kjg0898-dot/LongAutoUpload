@@ -72,7 +72,8 @@ class App:
         bar2 = ttk.Frame(root, padding=(8, 2, 8, 4))
         bar2.pack(fill="x")
         for text, cmd in (("설정", self.open_settings), ("안내", self.open_help), ("영상 폴더", lambda: self.open_dir(core.VIDEO_DIR)),
-                          ("완료 폴더", lambda: self.open_dir(core.DONE_DIR)), ("기록 폴더", lambda: self.open_dir(core.LOG_DIR))):
+                          ("완료 폴더", lambda: self.open_dir(core.DONE_DIR)), ("기록 폴더", lambda: self.open_dir(core.LOG_DIR)),
+                          ("업데이트", self.update)):
             ttk.Button(bar2, text=text, command=cmd).pack(side="left", padx=2)
 
         box = ttk.LabelFrame(root, text="진행 상황", padding=6)
@@ -179,7 +180,7 @@ class App:
         import yt
         cfg, todo = core.load_config(), []
         if not yt.secret_file().exists():
-            todo.append("① '안내' → 구글 연동 안내대로 client_secret.json을 _프로그램 폴더에 넣기")
+            todo.append("① '안내' → 구글 연동 안내대로 열쇠 파일(client_secret_….json)을 _프로그램 폴더에 넣기")
         if not cfg["channels"]:
             todo.append("② '설정' → 채널 추가 → 칸 채우기 → 로그인 → 저장")
         missing = [ch["name"] for ch in cfg["channels"] if not ch["channel_id"]]
@@ -219,6 +220,18 @@ class App:
         import yt
         if not yt.secret_file().exists():
             open_path(core.PROG / "구글연동_안내.md")
+
+    def update(self):
+        if not messagebox.askyesno("업데이트", "GitHub에서 최신 프로그램을 받아 프로그램 파일만 바꿉니다.\n"
+                                            "열쇠·로그인·설정·영상·엑셀은 그대로 둡니다. 진행할까요?"):
+            return
+
+        def work(app):
+            import update
+            n = update.update()
+            app.notify(f"업데이트: 파일 {n}개를 새로 바꿨습니다. 프로그램을 닫고 다시 실행해주세요." if n
+                       else "업데이트: 이미 최신입니다.")
+        self.run(work, "업데이트")
 
     def open_settings(self):
         if self.settings and self.settings.win.winfo_exists():

@@ -266,6 +266,35 @@ def test_config_validation():
         assert len(core.channel_dirs(ch("A", "[숨겨진동양사]"))) == 1  # [ ] 가 들어간 폴더 이름
 
 
+def test_update_keeps_private_files():
+    """업데이트는 프로그램 파일만 바꾸고 열쇠·로그인·설정·영상은 건드리지 않는다."""
+    import io
+    import zipfile
+    import update
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "_프로그램" / "토큰").mkdir(parents=True)
+        for name, text in (("_프로그램/core.py", "옛 코드"), ("_프로그램/client_secret.json", "열쇠"),
+                           ("_프로그램/설정.json", "설정"), ("_프로그램/토큰/a.json", "로그인"), ("영상/x.mp4", "영상"),
+                           ("실행.pyw", "같음")):
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(text, "utf-8")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("LongAutoUpload-HEAD/", "")
+            z.writestr("LongAutoUpload-HEAD/_프로그램/core.py", "새 코드".encode())
+            z.writestr("LongAutoUpload-HEAD/_프로그램/new.md", "새 문서".encode())
+            z.writestr("LongAutoUpload-HEAD/실행.pyw", "같음".encode())
+            z.writestr("LongAutoUpload-HEAD/영상/.gitkeep", b"")
+            z.writestr("LongAutoUpload-HEAD/.gitignore", b"x")
+        assert update.apply(buf.getvalue(), root) == 2
+        texts = {str(p.relative_to(root)): p.read_text("utf-8") for p in root.rglob("*") if p.is_file()}
+        assert texts == {"_프로그램/core.py": "새 코드", "_프로그램/new.md": "새 문서", "_프로그램/client_secret.json": "열쇠",
+                         "_프로그램/설정.json": "설정", "_프로그램/토큰/a.json": "로그인", "영상/x.mp4": "영상",
+                         "실행.pyw": "같음"}, texts
+        assert update.apply(buf.getvalue(), root) == 0  # 두 번째는 바뀔 것 없음
+
+
 def test_overrides():
     ch = {**core.DEFAULT_CHANNEL}
     assert core.overrides(ch) == ({}, {})  # 기본값은 아무것도 건드리지 않음

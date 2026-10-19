@@ -45,7 +45,7 @@ def login(key, interactive=True, fresh=False):
         if not interactive:
             raise NotLoggedIn
         if not secret_file().exists():
-            raise FileNotFoundError(f"client_secret.json이 없습니다. '안내' 버튼의 구글 연동 안내대로 받아서 넣어주세요: {PROG}")
+            raise FileNotFoundError(f"열쇠 파일(client_secret_….json)이 없습니다. 구글연동_안내.md 4번대로 받아서 이 폴더에 넣어주세요: {PROG}")
         try:
             # 매번 계정·채널 선택 화면을 띄워 원하는 채널을 고르게 한다. 5분 안에 안 끝나면 포기
             creds = InstalledAppFlow.from_client_secrets_file(secret_file(), SCOPES).run_local_server(

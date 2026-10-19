@@ -61,6 +61,10 @@ class App:
         toast("롱폼 자동 업로드", msg)
         self.q.put(("alert", msg))
 
+    def later(self, fn):
+        """화면을 건드리는 일은 메인 스레드에서 (poll이 실행)."""
+        self.q.put(("call", fn))
+
     def ask(self, question):
         if threading.current_thread() is threading.main_thread():
             return messagebox.askyesno("확인", question)
@@ -79,6 +83,8 @@ class App:
                 self.text.insert("end", data + "\n")
                 self.text.see("end")
                 messagebox.showwarning("알림", data)
+            elif kind == "call":
+                data()
             else:
                 question, answer, done = data
                 answer.append(messagebox.askyesno("확인", question))
@@ -247,7 +253,7 @@ class Settings:
             ch["channel_id"], ch["channel_title"] = yt.whoami(client)
             core.save_config(self.cfg)
             app.log(f"[{ch['name']}] 로그인 완료: {ch['channel_title']}")
-            app.root.after(0, lambda: self.win.winfo_exists() and self.refresh(self.cur or 0))
+            app.later(lambda: self.win.winfo_exists() and self.refresh(self.cur or 0))
         self.app.run(work)
 
     def save(self):
@@ -265,6 +271,9 @@ class Settings:
 
 def main():
     root = tk.Tk()
+    if sys.version_info < (3, 9):
+        messagebox.showerror("파이썬 버전", f"파이썬 3.9 이상이 필요합니다. 지금: {sys.version.split()[0]}")
+        return
     root.title("롱폼 자동 업로드")
     wait = ttk.Label(root, padding=30, text="처음 실행: 필요한 부품을 설치하는 중입니다...")
     wait.pack()

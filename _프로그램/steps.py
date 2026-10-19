@@ -110,9 +110,13 @@ def fill_all(ui):
         by_id, by_name = {v["id"]: v for v in recent}, yt.by_filename(recent)
 
         def work(r):
-            video = by_id.get(r["영상ID"]) if r["영상ID"] else by_name.get(Path(r["파일"]).name.lower())
+            if r["영상ID"]:  # 엑셀에 영상ID가 있으면 그걸로 (목록에 안 보이는 초안도 찾을 수 있게)
+                video = by_id.get(r["영상ID"]) or next(iter(yt.get_videos(client, [r["영상ID"]])), None)
+            else:
+                video = by_name.get(Path(r["파일"]).name.lower())
             if not video:
-                raise LookupError("Studio에서 이 파일의 초안을 못 찾았습니다 (업로드가 끝났는지 확인)")
+                raise LookupError("Studio에서 이 파일의 초안을 못 찾았습니다. 업로드가 끝났는지 확인하거나, "
+                                  "Studio 주소의 영상ID를 엑셀 '영상ID' 칸에 넣고 다시 눌러주세요.")
             r["영상ID"] = video["id"]
             if r["상태"] == "":
                 _fill_info(client, ch, r, video)

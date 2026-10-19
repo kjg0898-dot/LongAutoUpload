@@ -151,6 +151,26 @@ def test_full_flow():
         assert len(list((core.DONE_DIR / "b" / "명언").iterdir())) == 9
 
 
+def test_draft_by_pasted_id():
+    """초안이 업로드 목록에 안 보여도 엑셀 영상ID 칸에 넣으면 찾는다."""
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        steps.build_excel(ui)
+        hidden = fake.list
+        fake.list = lambda part, playlistId=None, **k: Call(lambda: {"items": []}) if playlistId == "UU1" \
+            else hidden(part, playlistId=playlistId, **k)
+        try:
+            steps.fill_all(ui)  # 3개 모두 못 찾음 → 연속 실패로 멈춤
+        except steps.Stop:
+            pass
+        assert all("영상ID" in r["오류"] for r in core.read_rows())
+        rows = core.read_rows()
+        rows[0]["영상ID"] = "vid0"
+        core.write_rows(rows)
+        steps.fill_all(ui)
+        assert core.read_rows()[0]["상태"] == "댓글완료"
+
+
 def test_stops_after_consecutive_fails():
     with tempfile.TemporaryDirectory() as d:
         fake, ui = setup(d), UI()

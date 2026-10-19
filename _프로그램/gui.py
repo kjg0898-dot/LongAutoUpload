@@ -55,7 +55,7 @@ def short(msg, limit=12):
 
 class App:
     def __init__(self, root):
-        self.root, self.q, self.busy, self.settings = root, queue.Queue(), False, None
+        self.root, self.q, self.busy, self.settings, self.closing = root, queue.Queue(), False, None, False
         root.title("롱폼 자동 업로드")
         import steps
         self.steps = steps
@@ -93,6 +93,7 @@ class App:
         self.first_run_guide()
         self.refresh_status()
         root.after(100, self.poll)
+        self.check_update()
 
     # --- 스레드에서 불러도 안전한 함수들 ---
     def log(self, msg):
@@ -126,7 +127,7 @@ class App:
         return answer[0]
 
     def poll(self):
-        while not self.q.empty():
+        while not self.q.empty() and not self.closing:
             kind, data = self.q.get()
             if kind == "log":
                 self.text.insert("end", data + "\n")
@@ -139,7 +140,8 @@ class App:
                 question, answer, done = data
                 answer.append(messagebox.askyesno("확인", question))
                 done.set()
-        self.root.after(100, self.poll)
+        if not self.closing:
+            self.root.after(100, self.poll)
 
     # --- 작업 실행 ---
     def set_busy(self, label):
@@ -221,17 +223,37 @@ class App:
         if not yt.secret_file().exists():
             open_path(core.PROG / "구글연동_안내.md")
 
-    def update(self):
-        if not messagebox.askyesno("업데이트", "GitHub에서 최신 프로그램을 받아 프로그램 파일만 바꿉니다.\n"
-                                            "열쇠·로그인·설정·영상·엑셀은 그대로 둡니다. 진행할까요?"):
-            return
-
+    def update(self, data=None):
+        """새 버전을 받아 바꾸고 프로그램을 다시 켠다. 열쇠·로그인·설정·영상·엑셀은 그대로."""
         def work(app):
             import update
-            n = update.update()
-            app.notify(f"업데이트: 파일 {n}개를 새로 바꿨습니다. 프로그램을 닫고 다시 실행해주세요." if n
-                       else "업데이트: 이미 최신입니다.")
+            n = update.apply(data or update.fetch())
+            if not n:
+                return app.log("업데이트: 이미 최신입니다.")
+            app.log(f"업데이트: 파일 {n}개를 새로 바꿨습니다. 프로그램을 다시 켭니다…")
+            app.later(app.restart)
         self.run(work, "업데이트")
+
+    def check_update(self):
+        """켤 때 새 버전이 있으면 묻지 않고 바로 업데이트하고 다시 켠다 (인터넷이 안 되면 그냥 넘어감).
+        이미 작업 버튼을 눌러 진행 중이면 건드리지 않고 다음에 켤 때 한다."""
+        def check():
+            try:
+                import update
+                data = update.fetch()
+                n = update.apply(data, dry=True)
+            except Exception:
+                return
+            if n:
+                self.later(lambda: self.log("새 버전이 있지만 작업 중이라 다음에 켤 때 업데이트합니다.")
+                           if self.busy else self.update(data))
+        threading.Thread(target=check, daemon=True).start()
+
+    def restart(self):
+        self.closing = True  # 창을 닫은 뒤 남은 화면 처리가 돌지 않게
+        self.progress.stop()
+        subprocess.Popen([sys.executable, str(core.ROOT / "실행.pyw")], cwd=str(core.ROOT))
+        self.root.destroy()
 
     def open_settings(self):
         if self.settings and self.settings.win.winfo_exists():

@@ -287,6 +287,7 @@ def test_update_keeps_private_files():
             z.writestr("LongAutoUpload-HEAD/실행.pyw", "같음".encode())
             z.writestr("LongAutoUpload-HEAD/영상/.gitkeep", b"")
             z.writestr("LongAutoUpload-HEAD/.gitignore", b"x")
+        assert update.apply(buf.getvalue(), root, dry=True) == 2 and (root / "_프로그램/core.py").read_text("utf-8") == "옛 코드"
         assert update.apply(buf.getvalue(), root) == 2
         texts = {str(p.relative_to(root)): p.read_text("utf-8") for p in root.rglob("*") if p.is_file()}
         assert texts == {"_프로그램/core.py": "새 코드", "_프로그램/new.md": "새 문서", "_프로그램/client_secret.json": "열쇠",

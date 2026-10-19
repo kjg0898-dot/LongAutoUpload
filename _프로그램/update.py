@@ -10,8 +10,13 @@ from core import ROOT
 URL = "https://codeload.github.com/kjg0898-dot/LongAutoUpload/zip/HEAD"  # 기본 브랜치의 최신 상태
 
 
-def apply(zip_bytes, root=ROOT):
-    """받은 zip의 파일 중 바뀐 것만 덮어쓴다. 바꾼 파일 수를 돌려준다."""
+def fetch():
+    with urllib.request.urlopen(URL, timeout=60) as res:
+        return res.read()
+
+
+def apply(zip_bytes, root=ROOT, dry=False):
+    """받은 zip의 파일 중 바뀐 것만 덮어쓴다(dry면 세기만). 바뀐 파일 수를 돌려준다."""
     changed = 0
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
         for name in z.namelist():
@@ -21,14 +26,11 @@ def apply(zip_bytes, root=ROOT):
             dst, new = root / rel, z.read(name)
             if dst.exists() and dst.read_bytes() == new:
                 continue
+            changed += 1
+            if dry:
+                continue
             dst.parent.mkdir(parents=True, exist_ok=True)
             tmp = dst.with_name(dst.name + ".새것")
             tmp.write_bytes(new)
             os.replace(tmp, dst)  # 파일 하나씩 통째로 바꿔서 중간에 끊겨도 반쯤 쓴 파일이 안 남게
-            changed += 1
     return changed
-
-
-def update():
-    with urllib.request.urlopen(URL, timeout=60) as res:
-        return apply(res.read())

@@ -100,10 +100,11 @@ def setup(d):
     ch = {**core.new_channel("명언"), "folder": "명언", "members": True, "channel_id": "UC1",
           "slots": "월 18:00, 수 18:00, 금 18:00", "playlist": "PL1"}
     core.save_config({**core.DEFAULT_CONFIG, "channels": [ch]})
+    (core.VIDEO_DIR / "b" / "명언").mkdir(parents=True)
     for n in (1, 2, 3):
-        (core.VIDEO_DIR / "명언" / f"{n}.mp4").write_bytes(b"v")
-        (core.VIDEO_DIR / "명언" / f"{n}.jpg").write_bytes(b"i")
-        (core.VIDEO_DIR / "명언" / f"{n}.txt").write_text(
+        (core.VIDEO_DIR / "b" / "명언" / f"{n}.mp4").write_bytes(b"v")
+        (core.VIDEO_DIR / "b" / "명언" / f"{n}.jpg").write_bytes(b"i")
+        (core.VIDEO_DIR / "b" / "명언" / f"{n}.txt").write_text(
             f"제목: 명언 {n}\n설명: 본문 {n}\n태그: #명언, 새태그\n고정댓글: 댓글 {n}", "utf-8")
     fake = FakeYouTube(["1.mp4", "2.mp4", "3.mp4"])
     yt.client_for = lambda ch, interactive=False: fake
@@ -146,8 +147,8 @@ def test_full_flow():
         assert fake.videos_db["vid0"]["status"]["publishAt"].endswith("Z")
         assert fake.videos_db["vid2"]["status"]["privacyStatus"] == "unlisted"  # 회원 영상은 사용자가 직접
         assert any("회원 전용" in a for a in ui.alerts)
-        assert not list((core.VIDEO_DIR / "명언").iterdir())
-        assert len(list((core.DONE_DIR / "명언").iterdir())) == 9
+        assert not list(core.VIDEO_DIR.iterdir())  # 끝난 묶음 폴더는 비워지고 지워진다
+        assert len(list((core.DONE_DIR / "b" / "명언").iterdir())) == 9
 
 
 def test_stops_after_consecutive_fails():

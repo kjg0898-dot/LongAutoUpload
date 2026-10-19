@@ -58,8 +58,7 @@ def save_config(cfg):
     if "" in names or len(set(names)) != len(names):
         raise ValueError("채널 이름이 비어 있거나 겹칩니다.")
     CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8")
-    for ch in cfg["channels"]:
-        (VIDEO_DIR / ch["folder"]).mkdir(parents=True, exist_ok=True)
+    VIDEO_DIR.mkdir(exist_ok=True)
 
 
 def overrides(ch):
@@ -139,7 +138,7 @@ def parse_seo(text):
         pick = int(rec[1]) - 1 if rec and 0 < int(rec[1]) <= len(titles) else 0
         desc = find("설명")
         out.append({"num": num, "orig": orig, "titles": titles, "title": titles[pick] if titles else orig,
-                    "desc": desc, "tags": " ".join(re.findall(r"#\S+", desc)), "comment": find("고정")})
+                    "desc": desc, "tags": "", "comment": find("고정")})  # 해시태그는 설명에만
     return out
 
 
@@ -273,31 +272,38 @@ def _match_thumb(video, entry, images, videos):
     return _find_pair(video, images, videos)
 
 
-def _unit(path, folder):
-    """묶음 단위: 채널 폴더 바로 아래 폴더(예: 영상/채널/1). 채널 폴더에 바로 있으면 채널 폴더."""
-    parts = Path(path).relative_to(folder).parts
-    return Path(folder) / parts[0] if len(parts) > 1 else Path(folder)
-
-
 def scan_channel(folder):
-    """[(영상, 메모장 항목 또는 None, 썸네일 또는 None)] — 묶음 폴더 안에서만 짝을 찾고, 파일 이름 순서."""
+    """[(영상, 메모장 항목 또는 None, 썸네일 또는 None)] — 한 묶음의 한 채널 폴더 안에서, 파일 이름 순서."""
     files = [p for p in Path(folder).rglob("*") if p.is_file()]
     videos = sorted((p for p in files if p.suffix.lower() in VIDEO_EXT), key=natural_key)
     entries = load_entries(p for p in files if p.suffix.lower() == ".txt")
     images = [p for p in files if p.suffix.lower() in IMAGE_EXT]
     pairs = []
     for v in videos:
-        unit = _unit(v, folder)
-        same = lambda p: _unit(p, folder) == unit  # noqa: E731
-        vids = [x for x in videos if same(x)]
-        entry = _match_entry(v, [e for e in entries if same(e["src"])], vids)
-        pairs.append([v, entry, _match_thumb(v, entry, [i for i in images if same(i)], vids)])
+        entry = _match_entry(v, entries, videos)
+        pairs.append([v, entry, _match_thumb(v, entry, images, videos)])
     for col in (1, 2):  # 한 메모장 항목·썸네일이 두 영상에 짝지어지면 둘 다 확인 필요로 돌린다
         used = [id(p[col]) for p in pairs if p[col]]
         for p in pairs:
             if p[col] and used.count(id(p[col])) > 1:
                 p[col] = None
     return [tuple(p) for p in pairs]
+
+
+def channel_dirs(ch):
+    """영상/<묶음>/<채널 폴더> 들, 묶음 이름 순서."""
+    return sorted((d for d in VIDEO_DIR.glob(f"*/{ch['folder']}") if d.is_dir()), key=natural_key)
+
+
+def new_batch(cfg, today=None):
+    """영상/<오늘 날짜>/<채널 폴더들> 을 만든다. 같은 날 또 만들면 -2, -3 …"""
+    name = (today or datetime.now(KST)).strftime("%Y-%m-%d")
+    batch, n = VIDEO_DIR / name, 2
+    while batch.exists():
+        batch, n = VIDEO_DIR / f"{name}-{n}", n + 1
+    for ch in cfg["channels"]:
+        (batch / ch["folder"]).mkdir(parents=True)
+    return batch
 
 
 # ---------- 예약 ----------
@@ -362,9 +368,7 @@ def build_rows(cfg, old_rows):
     """영상 폴더를 훑어 엑셀 행을 만든다. 이미 있던 행(사용자가 고친 제목 등)은 그대로 둔다."""
     old = {r["파일"]: r for r in old_rows}
     rows, problems = [], []
-    for ch in cfg["channels"]:
-        folder = VIDEO_DIR / ch["folder"]
-        folder.mkdir(parents=True, exist_ok=True)
+    for ch, folder in ((ch, d) for ch in cfg["channels"] for d in channel_dirs(ch)):
         added = []
         for video, entry, thumb in scan_channel(folder):
             name = rel(video)
@@ -389,6 +393,8 @@ def build_rows(cfg, old_rows):
             added[-1]["회원우선"] = "O"  # 기본 규칙: 이번 묶음의 마지막 영상
     names = {ch["name"] for ch in cfg["channels"]}
     problems += [f"{r['파일']}: 설정에 없는 채널 '{r['채널']}'" for r in rows if r["채널"] not in names]
+    unknown = {rel(v) for v in VIDEO_DIR.rglob("*") if v.suffix.lower() in VIDEO_EXT} - {r["파일"] for r in rows}
+    problems += [f"{name}: 어느 채널인지 모름 (영상/묶음/채널폴더/ 안에 넣어주세요)" for name in sorted(unknown)]
     return rows, problems
 
 
@@ -450,19 +456,17 @@ def _move(relpath):
 
 
 def move_done(row):
-    """영상·썸네일을 완료/로. 묶음 폴더에 영상이 하나도 안 남으면 나머지(메모장·대본 등)도 통째로."""
+    """영상·썸네일을 완료/로. 이 묶음의 채널 폴더에 영상이 안 남으면 나머지(메모장·대본 등)도 통째로."""
     _move(row["파일"])
     _move(row.get("썸네일", ""))
-    channel = VIDEO_DIR / Path(row["파일"]).parts[0]
-    unit = _unit(VIDEO_DIR / row["파일"], channel)
-    rest = list(unit.rglob("*") if unit != channel else unit.glob("*"))
+    batch = VIDEO_DIR / Path(row["파일"]).parts[0]
+    unit = batch / Path(row["파일"]).parts[1]
+    rest = list(unit.rglob("*"))
     if any(p.suffix.lower() in VIDEO_EXT for p in rest):
         return
-    if unit == channel:  # 채널 폴더에 바로 둔 경우: 남은 메모장·이미지만 (다른 묶음 폴더는 건드리지 않음)
-        rest = [p for p in rest if p.suffix.lower() in IMAGE_EXT | {".txt"}]
     for f in (p for p in rest if p.is_file()):
         _move(rel(f))
     dirs = sorted((p for p in rest if p.is_dir()), key=lambda p: len(p.parts), reverse=True)
-    for d in dirs + ([unit] if unit != channel else []):  # 채널 폴더 자체는 남긴다
+    for d in dirs + [unit, batch]:
         if d.exists() and not any(d.iterdir()):
             d.rmdir()

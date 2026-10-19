@@ -41,6 +41,7 @@ class App:
         bar = ttk.Frame(root, padding=8)
         bar.pack(fill="x")
         import steps
+        ttk.Button(bar, text="새 묶음 폴더", command=self.make_batch).pack(side="left", padx=3)
         for text, fn in (("1. 엑셀 만들기", steps.build_excel), ("2. 정보·댓글 넣기", steps.fill_all),
                          ("3. 고정 탭 열기", None), ("4. 예약 걸기", steps.schedule_all)):
             cmd = self.pin_window if fn is None else (lambda f=fn: self.run(f))
@@ -49,7 +50,7 @@ class App:
         ttk.Button(bar, text="엑셀 열기", command=self.open_excel).pack(side="right", padx=3)
         self.text = scrolledtext.ScrolledText(root, wrap="word", font=("맑은 고딕", 10))
         self.text.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-        self.log("순서: 영상을 Studio에 올림 → 1 → 엑셀에서 제목 수정 → 2 → 3(고정) → 4")
+        self.log("순서: 새 묶음 폴더에 파일 넣기 + Studio에 영상 올리기 → 1 → 엑셀에서 제목 수정 → 2 → 3(고정) → 4")
         root.after(100, self.poll)
 
     # --- 스레드에서 불러도 안전한 함수들 ---
@@ -97,6 +98,15 @@ class App:
             finally:
                 self.busy = False
         threading.Thread(target=work, daemon=True).start()
+
+    def make_batch(self):
+        cfg = core.load_config()
+        if not cfg["channels"]:
+            return messagebox.showinfo("새 묶음", "설정에서 채널을 먼저 추가해주세요.")
+        batch = core.new_batch(cfg)
+        self.log(f"새 묶음 폴더를 만들었습니다: {batch.name}\n"
+                 "채널 폴더마다 영상·SEO 메모장·썸네일을 넣으세요. 폴더 안에서는 아무렇게나 둬도 됩니다.")
+        os.startfile(batch)
 
     def open_excel(self):
         if not core.EXCEL.exists():

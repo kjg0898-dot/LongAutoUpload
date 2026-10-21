@@ -46,6 +46,7 @@ description: 개인용 프로그램의 Google OAuth 앱(YouTube·Gmail·Drive·S
 ## 주의
 - 개인정보처리방침은 공개 페이지가 된다. 개인 이메일 대신 GitHub Issues 링크 같은 공개 문의처를 쓴다.
 - 열쇠 파일(`client_secret*.json`)과 토큰은 절대 저장소에 올리지 않는다(.gitignore에 넣기).
-- 실제 사례: LongAutoUpload(YouTube 업로드 정리 도구, 2026-10)에서 이 순서로 진행했다.
-  - 2번의 원인(주소 칸 누락)은 공식 문서와 사용자 보고를 근거로 한 것이다.
-  - 화면이 다르면 사용자에게 캡처를 받아 확인한다.
+- 실제 사례: LongAutoUpload(YouTube 업로드 정리 도구, 2026-10)에서 이 순서대로 해서 **프로덕션 게시에 성공**했다.
+  - 홈페이지·개인정보처리방침·승인된 도메인을 넣기 전에는 '앱 게시'가 회색이었다.
+  - GitHub Pages에서 Branch를 고르지 않고(None) Save하면 페이지가 켜지지 않는다. 브랜치와 `/docs`를 모두 골라야 한다.
+  - Pages 화면의 Visibility(GitHub Enterprise) 체험판은 필요 없다.

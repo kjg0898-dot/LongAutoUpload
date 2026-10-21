@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: ZIP 만들기
-        run: git archive --format=zip -o LongAutoUpload.zip HEAD -- . ':!.github' ':!.gitignore' ':!docs'
+        run: git archive --format=zip -o LongAutoUpload.zip HEAD -- . ':!.github' ':!.gitignore' ':!.claude' ':!docs'
       - name: 릴리스에 올리기
         env:
           GH_TOKEN: ${{ github.token }}

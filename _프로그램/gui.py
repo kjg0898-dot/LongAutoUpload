@@ -6,6 +6,7 @@ import sys
 import threading
 import tkinter as tk
 from datetime import datetime
+from pathlib import Path
 from tkinter import font as tkfont
 from tkinter import messagebox, scrolledtext, ttk
 
@@ -53,43 +54,106 @@ def short(msg, limit=12):
     return "\n".join(lines[:limit] + [f"… 외 {len(lines) - limit}줄 — 엑셀 '오류' 칸과 창 아래 기록을 확인하세요."])
 
 
+COLORS = {"next": "#FFF4CC", "card": "#FFFFFF", "edge": "#D9D9D9", "muted": "#666666", "accent": "#C0392B",
+          "bad": "#F8D7DA", "done": "#E2F0D9", "member": "#FCE4D6", "work": "#EAF1FB"}
+
+
 class App:
     def __init__(self, root):
         self.root, self.q, self.busy, self.settings, self.closing = root, queue.Queue(), False, None, False
         root.title("롱폼 자동 업로드")
         import steps
-        self.steps = steps
+        self.steps, self.rows = steps, []
 
-        bar = ttk.Frame(root, padding=(8, 8, 8, 2))
-        bar.pack(fill="x")
-        self.step_buttons = []
-        for text, cmd in (("0. 새 묶음 폴더", self.make_batch), ("1. 엑셀 만들기", lambda: self.run(steps.build_excel)),
-                          ("엑셀 열기(제목 수정)", self.open_excel), ("2. 정보·댓글 넣기", lambda: self.run(steps.fill_all)),
-                          ("3. 고정 탭 열기", self.pin_window), ("4. 예약 걸기", lambda: self.run(steps.schedule_all))):
-            b = ttk.Button(bar, text=text, command=cmd)
-            b.pack(side="left", padx=2)
-            self.step_buttons.append(b)
-        bar2 = ttk.Frame(root, padding=(8, 2, 8, 4))
-        bar2.pack(fill="x")
-        for text, cmd in (("설정", self.open_settings), ("안내", self.open_help), ("영상 폴더", lambda: self.open_dir(core.VIDEO_DIR)),
-                          ("완료 폴더", lambda: self.open_dir(core.DONE_DIR)), ("기록 폴더", lambda: self.open_dir(core.LOG_DIR)),
-                          ("업데이트", self.update), ("청소", self.clean_window)):
-            ttk.Button(bar2, text=text, command=cmd).pack(side="left", padx=2)
+        # 맨 위: 제목과 도구 버튼
+        top = ttk.Frame(root, padding=(12, 10, 12, 4))
+        top.pack(fill="x")
+        ttk.Label(top, text="롱폼 자동 업로드", font=(FONT, 15, "bold")).pack(side="left")
+        for text, cmd in (("청소", self.clean_window), ("업데이트", self.update), ("기록", lambda: self.open_dir(core.LOG_DIR)),
+                          ("완료 폴더", lambda: self.open_dir(core.DONE_DIR)), ("영상 폴더", lambda: self.open_dir(core.VIDEO_DIR)),
+                          ("안내", self.open_help), ("⚙ 설정", self.open_settings)):
+            ttk.Button(top, text=text, command=cmd).pack(side="right", padx=2)
 
-        box = ttk.LabelFrame(root, text="진행 상황", padding=6)
-        box.pack(fill="x", padx=8, pady=4)
-        self.summary = ttk.Label(box, justify="left")
-        self.summary.pack(anchor="w")
-        line = ttk.Frame(box)
-        line.pack(fill="x", pady=(4, 0))
-        self.state = ttk.Label(line, text="대기 중")
-        self.state.pack(side="left")
-        self.progress = ttk.Progressbar(line, mode="determinate", length=180)
+        body = ttk.PanedWindow(root, orient="horizontal")
+        body.pack(fill="both", expand=True, padx=12, pady=4)
+        left, right = ttk.Frame(body), ttk.Frame(body)
+        body.add(left, weight=0)
+        body.add(right, weight=1)
+
+        # 왼쪽: 단계 카드 (다음 할 단계를 노랗게)
+        self.cards, self.buttons = {}, {}
+        for key, title, label, cmd in (
+                ("0", "새 묶음 폴더", "폴더 만들기", self.make_batch),
+                ("1", "엑셀(목록) 만들기", "실행", lambda: self.run(steps.build_excel)),
+                ("제목", "제목 확인", "엑셀로 열기", self.open_excel),
+                ("2", "정보·댓글 넣기", "실행", lambda: self.run(steps.fill_all)),
+                ("3", "댓글 고정", "탭 열기", self.pin_window),
+                ("4", "예약 걸기", "실행", lambda: self.run(steps.schedule_all))):
+            card = tk.Frame(left, bg=COLORS["card"], highlightthickness=1, highlightbackground=COLORS["edge"], padx=10, pady=8)
+            card.pack(fill="x", pady=3)
+            badge = tk.Label(card, text="✎" if key == "제목" else key, width=2, font=(FONT, 13, "bold"),
+                             bg=COLORS["card"], fg=COLORS["muted"])
+            badge.grid(row=0, column=0, rowspan=2, sticky="n", padx=(0, 8))
+            name = tk.Label(card, text=title, font=(FONT, 11, "bold"), bg=COLORS["card"], anchor="w")
+            name.grid(row=0, column=1, sticky="w")
+            info = tk.Label(card, text="", font=(FONT, 9), fg=COLORS["muted"], bg=COLORS["card"], anchor="w",
+                            justify="left", wraplength=230)
+            info.grid(row=1, column=1, sticky="w")
+            button = ttk.Button(card, text=label, command=cmd, width=10)
+            button.grid(row=0, column=2, rowspan=2, padx=(10, 0))
+            card.columnconfigure(1, weight=1)
+            self.cards[key] = (card, badge, name, info)
+            self.buttons[key] = button
+        self.step_buttons = list(self.buttons.values())
+
+        # 오른쪽: 영상 목록
+        head = ttk.Frame(right)
+        head.pack(fill="x")
+        ttk.Label(head, text="영상 목록", font=(FONT, 11, "bold")).pack(side="left")
+        self.count = ttk.Label(head, foreground=COLORS["muted"])
+        self.count.pack(side="left", padx=8)
+        ttk.Button(head, text="새로고침", command=self.refresh_status).pack(side="right")
+        self.channel_filter = tk.StringVar(value="전체 채널")
+        self.filter_box = ttk.Combobox(head, textvariable=self.channel_filter, state="readonly", width=16)
+        self.filter_box.pack(side="right", padx=4)
+        self.filter_box.bind("<<ComboboxSelected>>", lambda e: self.fill_table())
+        self.only_problems = tk.BooleanVar()
+        ttk.Checkbutton(head, text="오류만", variable=self.only_problems, command=self.fill_table).pack(side="right", padx=4)
+
+        cols = (("채널", 100), ("파일", 170), ("제목", 330), ("예약일시", 120), ("상태", 110), ("오류", 260))
+        frame = ttk.Frame(right)
+        frame.pack(fill="both", expand=True, pady=(4, 0))
+        self.table = ttk.Treeview(frame, columns=[c for c, _ in cols], show="headings", selectmode="browse")
+        for col, width in cols:
+            self.table.heading(col, text=col)
+            self.table.column(col, width=width, minwidth=60, stretch=col in ("제목", "오류"))
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=self.table.yview)
+        self.table.configure(yscrollcommand=scroll.set)
+        self.table.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        for tag in ("bad", "done", "member", "work"):
+            self.table.tag_configure(tag, background=COLORS[tag])
+        self.table.bind("<Double-1>", lambda e: self.edit_selected())
+        self.table.bind("<Return>", lambda e: self.edit_selected())
+        self.table.bind("<Button-3>", self.row_menu)
+        ttk.Label(right, foreground=COLORS["muted"], text=(
+            "더블클릭: 제목·예약일시 고치기  ·  오른쪽 클릭: Studio 열기·다시 하기·썸네일 없이 등\n"
+            "색: 빨강=오류, 파랑=진행 중, 초록=완료, 주황=회원 직접설정")).pack(anchor="w", pady=(4, 0))
+
+        # 아래: 상태 줄과 기록
+        bottom = ttk.Frame(root, padding=(12, 2, 12, 8))
+        bottom.pack(fill="x")
+        self.summary = ttk.Label(bottom, justify="left", foreground=COLORS["muted"])
+        self.summary.pack(side="left")
+        self.progress = ttk.Progressbar(bottom, mode="determinate", length=180)
         self.progress.pack(side="right")
+        self.state = ttk.Label(bottom, text="대기 중")
+        self.state.pack(side="right", padx=8)
+        self.text = scrolledtext.ScrolledText(root, wrap="word", font=(FONT, 9), height=7)
+        self.text.pack(fill="x", padx=12, pady=(0, 10))
 
-        self.text = scrolledtext.ScrolledText(root, wrap="word", font=(FONT, 10), height=16)
-        self.text.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         root.protocol("WM_DELETE_WINDOW", self.close)
+        root.bind("<F5>", lambda e: self.refresh_status())
         self.first_run_guide()
         self.refresh_status()
         root.after(100, self.poll)
@@ -173,10 +237,88 @@ class App:
 
     def refresh_status(self):
         try:
-            text = self.steps.status_summary(core.read_rows(), core.load_config())
+            self.rows, cfg = core.read_rows(), core.load_config()
+            text = self.steps.status_summary(self.rows, cfg)
+            has_videos = core.VIDEO_DIR.exists() and any(
+                p.suffix.lower() in core.VIDEO_EXT for p in core.VIDEO_DIR.rglob("*"))
+            infos, nxt = self.steps.card_status(self.rows, has_videos)
+            names = ["전체 채널"] + [ch["name"] for ch in cfg["channels"]]
         except Exception as e:
-            text = f"엑셀을 읽지 못했습니다: {e}"
-        self.summary.config(text=text)
+            self.rows, text, infos, nxt, names = [], f"엑셀을 읽지 못했습니다: {e}", {}, None, ["전체 채널"]
+        self.summary.config(text=text.replace("\n", "   "))
+        self.filter_box.config(values=names)
+        if self.channel_filter.get() not in names:
+            self.channel_filter.set("전체 채널")
+        for key, (card, badge, name, info) in self.cards.items():
+            bg = COLORS["next"] if key == nxt else COLORS["card"]
+            for w in (card, badge, name, info):
+                w.config(bg=bg)
+            badge.config(fg=COLORS["accent"] if key == nxt else COLORS["muted"])
+            info.config(text=("▶ 지금 할 차례  ·  " if key == nxt else "") + infos.get(key, ""))
+        self.fill_table()
+
+    def fill_table(self):
+        self.table.delete(*self.table.get_children())
+        channel = self.channel_filter.get()
+        shown = [i for i, r in enumerate(self.rows) if channel in ("", "전체 채널", r["채널"])
+                 and (not self.only_problems.get() or r["오류"])]
+        for i in shown:
+            r = self.rows[i]
+            tag = ("bad" if r["오류"] else "member" if r["상태"] == core.MEMBER_TODO
+                   else "done" if r["상태"] in core.DONE_STATES else "work" if r["상태"] else "")
+            self.table.insert("", "end", iid=str(i), tags=(tag,), values=(
+                r["채널"], Path(r["파일"]).name, r["제목"], r["예약일시"], r["상태"] or "대기", r["오류"]))
+        self.count.config(text=f"{len(shown)}개" + (f" / 전체 {len(self.rows)}개" if len(shown) != len(self.rows) else ""))
+
+    def selected_row(self):
+        sel = self.table.selection()
+        return (int(sel[0]), self.rows[int(sel[0])]) if sel else (None, None)
+
+    def edit_selected(self):
+        index, row = self.selected_row()
+        if row is None:
+            return
+        if self.busy:
+            return messagebox.showinfo("잠시만요", "작업이 끝난 뒤에 고쳐주세요.")
+        Editor(self, index)
+
+    def row_menu(self, event):
+        iid = self.table.identify_row(event.y)
+        if not iid:
+            return
+        self.table.selection_set(iid)
+        index, r = self.selected_row()
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="제목·예약일시 고치기…", command=self.edit_selected)
+        vid = r["영상ID"]
+        menu.add_command(label="Studio에서 열기", state="normal" if vid else "disabled",
+                         command=lambda: self.steps.open_tabs([f"https://studio.youtube.com/video/{vid}/edit"]))
+        menu.add_command(label="YouTube에서 보기", state="normal" if vid else "disabled",
+                         command=lambda: self.steps.open_tabs([f"https://youtu.be/{vid}"]))
+        menu.add_command(label="파일 있는 폴더 열기", command=lambda: self.open_dir((core.VIDEO_DIR / r["파일"]).parent))
+        menu.add_separator()
+        no_thumb = r["썸네일"] == "없음"
+        menu.add_command(label="썸네일 다시 찾기 (1단계)" if no_thumb else "썸네일 없이 올리기",
+                         state="normal" if r["상태"] == "" else "disabled",
+                         command=lambda: self.change_row(index, {"썸네일": "" if no_thumb else "없음"}))
+        # 정보완료(댓글 전)·대기 중 오류만 처음부터: 원본 틀 백업에서 다시 합치므로 제목이 두 번 안 들어감
+        can_redo = r["상태"] == "정보완료" or (r["상태"] == "" and r["오류"])
+        menu.add_command(label="2단계 처음부터 다시 하기", state="normal" if can_redo else "disabled",
+                         command=lambda: self.change_row(index, {"상태": "", "오류": ""}))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def change_row(self, index, changes):
+        if self.busy:
+            return messagebox.showinfo("잠시만요", "작업이 끝난 뒤에 해주세요.")
+        try:
+            rows = core.read_rows()
+            target = next(r for r in rows if r["파일"] == self.rows[index]["파일"])
+            target.update(changes)
+            core.write_rows(rows)
+        except core.ExcelLocked:
+            return messagebox.showwarning("엑셀", "엑셀이 열려 있어서 저장하지 못했습니다. 엑셀을 닫고 다시 해주세요.")
+        self.refresh_status()
+        self.table.selection_set(str(index))
 
     def first_run_guide(self):
         import yt
@@ -189,7 +331,7 @@ class App:
         if missing:
             todo.append(f"③ 로그인이 필요한 채널: {', '.join(missing)} ('설정'에서 채널 선택 → 로그인)")
         self.log("처음 준비할 것:\n  " + "\n  ".join(todo) if todo else
-                 "순서: 0 → 영상 넣고 Studio에 업로드 → 1 → 엑셀에서 제목 확인 → 2 → 3(고정) → 4")
+                 "순서: 0 → 영상 넣고 Studio에 업로드 → 1 → 목록에서 제목 확인 → 2 → 3(고정) → 4")
 
     def close(self):
         if self.busy and not messagebox.askyesno("닫기", "작업이 진행 중입니다. 정말 닫을까요?\n"
@@ -331,6 +473,140 @@ class App:
             b.pack(fill="x", padx=10, pady=2)
         ttk.Button(win, text="고정을 다 했으면 → 4. 예약 걸기", command=lambda: (win.destroy(), self.run(
             self.steps.schedule_all))).pack(fill="x", padx=10, pady=10)
+
+
+class Editor:
+    """영상 하나의 노란 칸(제목·예약일시·회원우선·썸네일·영상ID)을 엑셀 없이 고치는 창. '저장하고 다음'으로 빠르게 넘김."""
+
+    def __init__(self, app, index):
+        self.app, self.index = app, index
+        win = self.win = tk.Toplevel(app.root)
+        win.title("영상 고치기")
+        win.transient(app.root)
+        win.grab_set()
+        self.vars = {k: tk.StringVar() for k in ("제목", "예약일시", "영상ID")}
+        self.member, self.no_thumb = tk.BooleanVar(), tk.BooleanVar()
+        f = ttk.Frame(win, padding=14)
+        f.pack(fill="both", expand=True)
+        self.where = ttk.Label(f, font=(FONT, 10, "bold"))
+        self.where.grid(row=0, column=0, columnspan=3, sticky="w")
+        self.note = ttk.Label(f, foreground=COLORS["accent"])
+        self.note.grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 6))
+        ttk.Label(f, text="제목").grid(row=2, column=0, sticky="w")
+        self.title_entry = ttk.Entry(f, textvariable=self.vars["제목"], width=72)
+        self.title_entry.grid(row=2, column=1, sticky="we")
+        self.length = ttk.Label(f, width=16)
+        self.length.grid(row=2, column=2, sticky="w", padx=6)
+        self.vars["제목"].trace_add("write", lambda *a: self.update_length())
+        ttk.Label(f, text="제목 후보").grid(row=3, column=0, sticky="nw", pady=4)
+        self.candidates = ttk.Frame(f)
+        self.candidates.grid(row=3, column=1, columnspan=2, sticky="w", pady=4)
+        ttk.Label(f, text="예약일시").grid(row=4, column=0, sticky="w")
+        ttk.Entry(f, textvariable=self.vars["예약일시"], width=20).grid(row=4, column=1, sticky="w")
+        ttk.Label(f, foreground=COLORS["muted"], text="예) 2026-10-21 12:15 · 날짜만 적으면 그 요일 공개 시간 · 비우면 자동").grid(
+            row=5, column=1, sticky="w")
+        ttk.Checkbutton(f, text="회원 우선 공개 (회원 전용으로 직접 설정할 영상)", variable=self.member).grid(
+            row=6, column=1, sticky="w", pady=(6, 0))
+        self.thumb_check = ttk.Checkbutton(f, variable=self.no_thumb)
+        self.thumb_check.grid(row=7, column=1, sticky="w")
+        ttk.Label(f, text="영상ID").grid(row=8, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(f, textvariable=self.vars["영상ID"], width=40).grid(row=8, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(f, foreground=COLORS["muted"], text="보통 비워둠. '초안을 못 찾았습니다'면 영상 주소를 통째로 붙여넣기").grid(
+            row=9, column=1, sticky="w")
+        ttk.Label(f, text="설명").grid(row=10, column=0, sticky="nw", pady=(8, 0))
+        self.desc = scrolledtext.ScrolledText(f, height=5, width=72, wrap="word", font=(FONT, 9))
+        self.desc.grid(row=10, column=1, columnspan=2, sticky="we", pady=(8, 0))
+        ttk.Label(f, text="고정 댓글").grid(row=11, column=0, sticky="nw", pady=(4, 0))
+        self.comment = scrolledtext.ScrolledText(f, height=3, width=72, wrap="word", font=(FONT, 9))
+        self.comment.grid(row=11, column=1, columnspan=2, sticky="we", pady=(4, 0))
+        ttk.Label(f, foreground=COLORS["muted"], text="설명·고정 댓글은 SEO 메모장 그대로 (여기서는 보기만)").grid(
+            row=12, column=1, sticky="w")
+        bar = ttk.Frame(f)
+        bar.grid(row=13, column=0, columnspan=3, sticky="we", pady=(12, 0))
+        ttk.Button(bar, text="◀ 이전", command=lambda: self.save_and_move(-1)).pack(side="left")
+        ttk.Button(bar, text="저장하고 다음 ▶", command=lambda: self.save_and_move(1)).pack(side="left", padx=6)
+        ttk.Button(bar, text="닫기", command=win.destroy).pack(side="right")
+        ttk.Button(bar, text="저장", command=lambda: self.save_and_move(0)).pack(side="right", padx=6)
+        win.bind("<Return>", lambda e: self.save_and_move(1))
+        win.bind("<Escape>", lambda e: win.destroy())
+        self.load()
+
+    def load(self):
+        r = self.row = self.app.rows[self.index]
+        self.where.config(text=f"[{r['채널']}] {Path(r['파일']).name}   ({self.index + 1}/{len(self.app.rows)})")
+        editable = r["상태"] == ""
+        self.note.config(text="" if editable else
+                         f"이미 YouTube에 넣은 영상입니다 (상태: {r['상태']}). 제목은 바꿔도 반영되지 않습니다.")
+        for k, var in self.vars.items():
+            var.set(r[k])
+        self.member.set(core.is_member(r["회원우선"]))
+        self.no_thumb.set(r["썸네일"] == "없음")
+        self.thumb_check.config(text="썸네일 없이 올리기" + ("" if r["썸네일"] in ("", "없음")
+                                                         else f"  (지금 썸네일: {Path(r['썸네일']).name})"))
+        self.title_entry.state(["!disabled"] if editable else ["disabled"])
+        for w in self.candidates.winfo_children():
+            w.destroy()
+        for line in [x for x in r["제목후보"].splitlines() if x.strip()]:
+            text = line.split(". ", 1)[-1]
+            ttk.Button(self.candidates, text=line if len(line) < 70 else line[:68] + "…",
+                       command=lambda t=text: self.vars["제목"].set(t)).pack(anchor="w")
+        for box, value in ((self.desc, r["설명"]), (self.comment, r["고정댓글"])):
+            box.config(state="normal")
+            box.delete("1.0", "end")
+            box.insert("1.0", value)
+            box.config(state="disabled")
+        self.title_entry.focus_set()
+        self.update_length()
+
+    def update_length(self):
+        n = len(self.vars["제목"].get())
+        # 초안 제목 틀이 보통 30자 정도라 엑셀 제목은 70자 아래가 안전 (전체 100자 한도)
+        self.length.config(text=f"{n}자" + (" ⚠ 길어요" if n > 68 else ""),
+                           foreground=COLORS["accent"] if n > 68 else COLORS["muted"])
+
+    def save(self):
+        changes = {"제목": self.vars["제목"].get().strip(), "영상ID": core.video_id(self.vars["영상ID"].get()),
+                   "회원우선": "O" if self.member.get() else ""}
+        when = self.vars["예약일시"].get().strip()
+        if when:
+            ch = next((c for c in core.load_config()["channels"] if c["name"] == self.row["채널"]), None)
+            try:
+                t = core.parse_dt(when, core.parse_slots(ch["slots"], ch["name"]) if ch else None)
+            except ValueError as e:
+                messagebox.showerror("예약일시", str(e), parent=self.win)
+                return False
+            when = core.fmt_dt(t)
+        changes["예약일시"] = when
+        if self.no_thumb.get():
+            changes["썸네일"] = "없음"
+        elif self.row["썸네일"] == "없음":
+            changes["썸네일"] = ""  # 다시 찾도록 (1단계를 다시 누르면 채워짐)
+        if all(self.row.get(k) == v for k, v in changes.items()):
+            return True
+        try:
+            rows = core.read_rows()
+            target = next(r for r in rows if r["파일"] == self.row["파일"])
+            target.update(changes)
+            core.write_rows(rows)
+        except core.ExcelLocked:
+            messagebox.showwarning("엑셀", "엑셀이 열려 있어서 저장하지 못했습니다. 엑셀을 닫고 다시 저장해주세요.",
+                                   parent=self.win)
+            return False
+        self.app.refresh_status()
+        return True
+
+    def save_and_move(self, step):
+        if not self.save():
+            return
+        nxt = self.index + step
+        if step == 0 or not 0 <= nxt < len(self.app.rows):
+            if step:
+                messagebox.showinfo("영상 고치기", "마지막 영상입니다." if step > 0 else "첫 영상입니다.", parent=self.win)
+            return
+        self.index = nxt
+        self.app.table.selection_set(str(nxt))
+        self.app.table.see(str(nxt))
+        self.load()
 
 
 # 설정 칸: (키, 이름, 종류) — 종류가 목록이면 고르는 칸
@@ -534,7 +810,8 @@ def setup_display(root):
         except tk.TclError:
             pass
     scale = root.winfo_fpixels("1i") / 96
-    root.geometry(f"{int(900 * scale)}x{int(620 * scale)}")
+    root.geometry(f"{int(1240 * scale)}x{int(760 * scale)}")
+    root.minsize(int(960 * scale), int(600 * scale))
 
 
 def main():

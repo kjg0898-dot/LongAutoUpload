@@ -131,7 +131,7 @@ def status_summary(rows, cfg):
         lines.append(f"{ch['name']}: " + " · ".join(parts) + (f" · 오류 {errors}" if errors else ""))
     states = {r["상태"] for r in rows}
     if "" in states:
-        nxt = "엑셀에서 제목 확인 → 2. 정보·댓글 넣기"
+        nxt = "목록에서 영상 더블클릭해 제목 확인 → 2. 정보·댓글 넣기"
     elif "정보완료" in states:
         nxt = "2. 정보·댓글 넣기 (남은 댓글)"
     elif "댓글완료" in states:
@@ -141,6 +141,36 @@ def status_summary(rows, cfg):
     else:
         nxt = "0. 새 묶음 폴더에 파일 넣고 Studio에 업로드 → 1. 엑셀 만들기"
     return ("\n".join(lines) or "진행 중인 영상 없음") + f"\n▶ 다음 할 일: {nxt}"
+
+
+def card_status(rows, has_videos=False):
+    """화면 왼쪽 단계 카드: ({단계: 설명}, 다음 할 단계). 단계 = 0, 1, 제목, 2, 3, 4."""
+    c = Counter(r["상태"] for r in rows)
+    done = sum(c[s] for s in core.DONE_STATES)
+    errors = sum(1 for r in rows if r["오류"])
+    member = c[core.MEMBER_TODO]
+    text = {
+        "0": "채널 폴더에 영상·SEO·썸네일을 넣고 Studio에 업로드" if not rows else "이번 묶음 준비됨",
+        "1": f"영상 {len(rows)}개" + (f" · 오류 {errors}" if errors else "") if rows else "SEO·썸네일을 짝지어 목록 만들기",
+        "제목": f"{c['']}개 — 목록에서 더블클릭해 확인·수정" if c[""] else "확인할 제목 없음",
+        "2": f"남은 {c[''] + c['정보완료']}개" if c[""] + c["정보완료"] else ("완료" if rows else "제목·설명·썸네일·댓글 넣기"),
+        "3": f"고정할 영상 {c['댓글완료']}개" if c["댓글완료"] else "탭을 열어 댓글 고정 (직접)",
+        "4": (f"예약할 영상 {c['댓글완료']}개" if c["댓글완료"] else "예약 + 완료 폴더로 이동")
+             + (f" · 완료 {done}" if done else "") + (f" · 회원 직접설정 {member}" if member else ""),
+    }
+    if c[""]:
+        nxt = "제목"
+    elif c["정보완료"]:
+        nxt = "2"
+    elif c["댓글완료"]:
+        nxt = "3"
+    elif rows and not member:
+        nxt = "0"
+    elif member:
+        nxt = "4"
+    else:
+        nxt = "1" if has_videos else "0"
+    return text, nxt
 
 
 # ---------- 1. 엑셀 만들기 ----------
@@ -168,7 +198,7 @@ def build_excel(ui):
         problems += [f"{m} (예약일시는 4단계에서 채움)" for m in skipped]
     if problems:
         ui.alert("확인이 필요한 것이 있습니다:\n" + "\n".join(f"- {p}" for p in problems))
-    ui.log("엑셀 열기 → 노란 칸(제목·회원우선·예약일시)만 확인·수정 → 저장하고 엑셀을 닫은 뒤 2단계를 누르세요.")
+    ui.log("오른쪽 목록에서 영상을 더블클릭해 제목·예약일시 확인 → 저장하고 다음 (엑셀로 고쳐도 됩니다) → 다 되면 2단계를 누르세요.")
 
 
 # ---------- 2. 정보·댓글 넣기 ----------

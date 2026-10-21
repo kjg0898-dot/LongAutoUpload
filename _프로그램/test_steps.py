@@ -382,6 +382,18 @@ def test_schedule_verify_waits_for_delayed_read():
         assert [r["상태"] for r in rows[:2]] == ["예약완료", "예약완료"] and not rows[0]["오류"], rows
 
 
+def test_card_status():
+    row = lambda state, err="": dict.fromkeys(core.COLUMNS, "") | {"상태": state, "오류": err}  # noqa: E731
+    assert steps.card_status([])[1] == "0" and steps.card_status([], has_videos=True)[1] == "1"
+    text, nxt = steps.card_status([row(""), row("", "썸네일 없음"), row("정보완료")])
+    assert nxt == "제목" and text["1"] == "영상 3개 · 오류 1" and text["2"] == "남은 3개"
+    assert steps.card_status([row("정보완료")])[1] == "2"
+    assert steps.card_status([row("댓글완료"), row("예약완료")])[1] == "3"
+    text, nxt = steps.card_status([row("예약완료"), row(core.MEMBER_TODO)])
+    assert nxt == "4" and "회원 직접설정 1" in text["4"]
+    assert steps.card_status([row("예약완료")])[1] == "0"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

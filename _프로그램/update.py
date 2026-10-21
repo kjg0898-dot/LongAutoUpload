@@ -23,7 +23,7 @@ def apply(zip_bytes, root=ROOT, dry=False):
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
         for name in z.namelist():
             rel = name.split("/", 1)[1] if "/" in name else ""  # 맨 앞 폴더(LongAutoUpload-HEAD 등)는 뺀다
-            if not rel or name.endswith("/") or rel.startswith((".", "영상/", "완료/")):
+            if not rel or name.endswith("/") or rel.startswith((".", "docs/", "영상/", "완료/")):  # docs/는 구글 연동용 웹페이지
                 continue
             dst, new = root / rel, z.read(name)
             if dst.exists() and dst.read_bytes() == new:

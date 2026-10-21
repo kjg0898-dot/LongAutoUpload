@@ -69,7 +69,9 @@ def new_channel(name):
 
 
 def load_config():
-    cfg = {**DEFAULT_CONFIG, **(json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {})}
+    # 설정이 없으면(처음·완전 초기화 뒤) 미리 맞춰 둔 채널 설정에서 시작한다. 로그인만 하면 됨
+    src = CONFIG if CONFIG.exists() else CONFIG.with_name("채널_기본값.json")
+    cfg = {**DEFAULT_CONFIG, **(json.loads(src.read_text("utf-8")) if src.exists() else {})}
     cfg["channels"] = [{**DEFAULT_CHANNEL, **ch} for ch in cfg["channels"]]
     return cfg
 

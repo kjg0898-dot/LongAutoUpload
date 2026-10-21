@@ -1,0 +1,17 @@
+{
+  "channels": [
+    {
+      "key": "dongyangsa",
+      "name": "숨겨진동양사",
+      "folder": "숨겨진동양사",
+      "ypp": false,
+      "members": false,
+      "slots": "월 12:15, 수 12:15, 토 12:15",
+      "title_mode": "기준 글자 뒤",
+      "title_marker": "]",
+      "desc_mode": "맨 앞"
+    }
+  ],
+  "max_fails": 3,
+  "mode": "영상마다 확인"
+}

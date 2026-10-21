@@ -253,6 +253,10 @@ def test_excel_safety():
 def test_config_validation():
     with tempfile.TemporaryDirectory() as d:
         core.CONFIG, core.VIDEO_DIR = Path(d) / "설정.json", Path(d) / "영상"
+        assert core.load_config()["channels"] == []
+        (Path(d) / "채널_기본값.json").write_text('{"channels": [{"name": "P", "folder": "P"}], "mode": "영상마다 확인"}', "utf-8")
+        cfg = core.load_config()
+        assert cfg["channels"][0]["slots"] and cfg["mode"] == "영상마다 확인"  # 설정이 없으면 기본값 파일에서 시작
         ch = lambda name, folder, slots="월 12:00": {**core.DEFAULT_CHANNEL, "name": name, "folder": folder, "slots": slots}  # noqa: E731
         for bad, word in (([ch("A", "x"), ch("B", "X")], "폴더"), ([ch("A", "a/b")], "글자"),
                           ([ch("A", "")], "폴더"), ([ch("숨겨진동양사", "a", "월요일12시")], "[숨겨진동양사]")):

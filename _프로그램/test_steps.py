@@ -394,6 +394,48 @@ def test_card_status():
     assert steps.card_status([row("예약완료")])[1] == "0"
 
 
+def test_auto_all_and_no_title_template():
+    """한 번에 진행: 1 → (제목 확인 한 번) → 2. 제목 틀이 없는 채널(초안 제목 = 파일 이름)은 제목을 통째로 바꾼다."""
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        fake.videos_db["vid0"]["snippet"]["title"] = "1"
+        assert steps.auto_all(ui) is True  # 고정할 댓글이 있으니 고정 창을 띄움
+        assert len(ui.asked) == 1 and "명언 1" in ui.asked[0]
+        assert [r["상태"] for r in core.read_rows()] == ["댓글완료"] * 3
+        assert fake.videos_db["vid0"]["snippet"]["title"] == "명언 1"
+        assert fake.videos_db["vid1"]["snippet"]["title"].startswith("[숨겨진 동양사] 명언 2 l")
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        ui.answer = False  # 제목을 고치겠다고 하면 2단계는 하지 않는다
+        assert not steps.auto_all(ui)
+        assert [r["상태"] for r in core.read_rows()] == [""] * 3 and not fake.updates
+
+
+def test_relogin_when_expired():
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        calls = []
+
+        def client_for(ch, interactive=False):
+            calls.append(interactive)
+            if not interactive:
+                raise yt.NotLoggedIn
+            return fake
+        yt.client_for = client_for
+        assert steps._client(ui, core.load_config()["channels"][0], []) is fake and calls == [False, True]
+        ui.answer, skipped = False, []
+        assert steps._client(ui, core.load_config()["channels"][0], skipped) is None and "만료" in skipped[0]
+
+
+def test_publish_times():
+    fake = FakeYouTube(["a.mp4", "b.mp4", "c.mp4"])
+    fake.videos_db["vid0"]["status"]["publishAt"] = "2026-10-26T03:15:00Z"  # 예약
+    fake.videos_db["vid1"]["status"]["privacyStatus"] = "public"
+    fake.videos_db["vid1"]["snippet"]["publishedAt"] = "2026-10-24T03:15:00Z"  # 공개됨
+    got = [core.fmt_dt(t.astimezone(core.KST)) for t in yt.publish_times(fake)]
+    assert got == ["2026-10-26 12:15", "2026-10-24 12:15"], got  # 초안(vid2)은 빠짐
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

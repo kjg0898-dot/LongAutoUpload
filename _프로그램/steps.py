@@ -22,7 +22,13 @@ def _now():
 
 def _client(ui, ch, skipped):
     try:
-        return yt.client_for(ch)
+        try:
+            return yt.client_for(ch)
+        except yt.NotLoggedIn:
+            if not (ch["channel_id"] and ui.ask(f"[{ch['name']}] 로그인이 만료됐습니다. 지금 다시 로그인할까요?\n"
+                                                "브라우저가 열리면 이 채널의 계정과 채널을 고르세요.")):
+                raise
+            return yt.client_for(ch, interactive=True)
     except yt.NotLoggedIn:
         why = "로그인이 만료됐습니다" if ch["channel_id"] else "로그인 전입니다"
         msg = f"[{ch['name']}] {why} → 설정 → 이 채널 선택 → 로그인"
@@ -233,7 +239,10 @@ def _find_video(ui, client, r, by_id, recent, used):
 def _compose(ch, r, original):
     """보낼 내용. 항상 처음 백업한 초안 틀에서 합치므로 여러 번 실행해도 제목이 두 번 들어가지 않는다."""
     s = original["snippet"]
-    title = core.merge(s.get("title", ""), r["제목"], ch["title_mode"], ch["title_marker"], " ")
+    template = s.get("title", "")
+    if template.strip() == Path(r["파일"]).stem.strip():
+        template = ""  # Studio 제목 틀이 없는 채널: 초안 제목이 파일 이름이라 통째로 바꾼다
+    title = core.merge(template, r["제목"], ch["title_mode"], ch["title_marker"], " ")
     desc = core.merge(s.get("description", ""), r["설명"], ch["desc_mode"], ch["desc_marker"], "\n\n")
     tags = core.merge_tags(s.get("tags", []), core.parse_tags(r["태그"]), ch["tags_mode"])
     core.check_text(title, desc)
@@ -332,6 +341,19 @@ def pin_targets(rows, cfg):
 def open_tabs(urls):
     for u in urls:
         webbrowser.open_new_tab(u)
+
+
+# ---------- 한 번에 진행 (1 → 2, 그다음 고정 창) ----------
+def auto_all(ui):
+    build_excel(ui)
+    rows = core.read_rows()
+    new = [r for r in rows if r["상태"] == ""]
+    if new and not ui.ask(f"새 영상 {len(new)}개의 제목은 SEO 추천 1순위로 넣습니다. 이대로 진행할까요?\n\n"
+                          + "\n".join(f"- {r['제목']}" for r in new[:10]) + ("\n…" if len(new) > 10 else "")
+                          + "\n\n('아니요' → 목록에서 더블클릭해 고친 뒤 다시 누르세요)"):
+        return ui.log("제목을 고친 뒤 '한 번에 진행'을 다시 누르세요.")
+    fill_all(ui)
+    return bool(pin_targets(core.read_rows(), core.load_config()))
 
 
 # ---------- 4. 예약 걸기 ----------

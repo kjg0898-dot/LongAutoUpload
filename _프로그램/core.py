@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import uuid
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -381,6 +382,12 @@ def parse_slots(spec, channel=""):
     if not out:
         raise ValueError(f"{where}공개 요일·시간이 비어 있습니다.")
     return sorted(out)
+
+
+def detect_slots(times, recent=30, least=2):
+    """최근 공개(예약) 시각들 → '월 12:15, 수 12:15'. 두 번 이상 나온 요일·시간만 (그냥 바로 공개한 영상은 빠짐)."""
+    count = Counter((t.astimezone(KST).weekday(), t.astimezone(KST).strftime("%H:%M")) for t in sorted(times)[-recent:])
+    return ", ".join(f"{DAYS[d]} {hm}" for d, hm in sorted(k for k, n in count.items() if n >= least))
 
 
 def next_slots(after, slots, n):

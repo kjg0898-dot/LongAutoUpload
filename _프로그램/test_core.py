@@ -1,6 +1,6 @@
 """YouTube 연결 없이 확인할 수 있는 부분 검사. 실행: python test_core.py"""
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import core
@@ -166,6 +166,12 @@ def test_slots():
     after = datetime(2026, 10, 19, 18, 0, tzinfo=KST)  # 월요일 18:00 정각 (이 자리는 제외)
     got = [core.fmt_dt(t) for t in core.next_slots(after, slots, 4)]
     assert got == ["2026-10-21 18:00", "2026-10-23 20:30", "2026-10-26 18:00", "2026-10-28 18:00"], got
+    # 최근 공개 시각으로 공개 요일·시간 알아내기: 두 번 이상 나온 것만 (한 번뿐인 바로 공개는 빠짐)
+    mon = datetime(2026, 9, 7, 12, 15, tzinfo=KST)
+    times = [mon + timedelta(weeks=w, days=d) for w in range(3) for d in (0, 2, 5)] + [datetime(2026, 9, 9, 3, 7, tzinfo=KST)]
+    assert core.detect_slots(times) == "월 12:15, 수 12:15, 토 12:15", core.detect_slots(times)
+    assert core.detect_slots([mon]) == "" and core.detect_slots([]) == ""
+    assert core.parse_slots(core.detect_slots(times)) == [(0, 12, 15), (2, 12, 15), (5, 12, 15)]
     for bad in ("", "월18:00", "월 25:00", "x 18:00"):
         try:
             core.parse_slots(bad)

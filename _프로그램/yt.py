@@ -102,6 +102,17 @@ def recent_videos(yt, limit=200):
     return get_videos(yt, ids)
 
 
+def publish_times(yt, limit=50):
+    """최근 영상이 공개됐거나 공개될 시각 (예약은 publishAt, 공개된 것은 publishedAt)."""
+    out = []
+    for v in recent_videos(yt, limit):
+        s = v["status"]
+        t = s.get("publishAt") or (v["snippet"].get("publishedAt") if s.get("privacyStatus") == "public" else None)
+        if t:
+            out.append(parse_dt_utc(t))
+    return out
+
+
 def file_name(video):
     return video.get("fileDetails", {}).get("fileName", "")
 

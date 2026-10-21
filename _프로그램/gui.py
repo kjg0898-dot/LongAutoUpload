@@ -1,11 +1,12 @@
 """창 화면. 오래 걸리는 일은 별도 스레드에서 돌리고, 화면 갱신은 메인 스레드에서만 한다."""
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
 import tkinter as tk
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import font as tkfont
 from tkinter import messagebox, scrolledtext, ttk
@@ -82,6 +83,8 @@ class App:
 
         # 왼쪽: 단계 카드 (다음 할 단계를 노랗게)
         self.cards, self.buttons = {}, {}
+        auto = ttk.Button(left, text="▶ 한 번에 진행  (1 → 2 → 고정 탭)", command=self.auto_run)
+        auto.pack(fill="x", ipady=6, pady=(0, 4))
         for key, title, label, cmd in (
                 ("0", "새 묶음 폴더", "폴더 만들기", self.make_batch),
                 ("1", "엑셀(목록) 만들기", "실행", lambda: self.run(steps.build_excel)),
@@ -104,7 +107,7 @@ class App:
             card.columnconfigure(1, weight=1)
             self.cards[key] = (card, badge, name, info)
             self.buttons[key] = button
-        self.step_buttons = list(self.buttons.values())
+        self.step_buttons = [auto, *self.buttons.values()]
 
         # 오른쪽: 영상 목록
         head = ttk.Frame(right)
@@ -230,10 +233,27 @@ class App:
             try:
                 fn(self)
             except Exception as e:
+                if str(e) == self.steps.QUOTA_MSG:
+                    self.later(lambda: self.resume_later(fn, label))
                 self.alert(f"멈췄습니다: {e}")
             finally:
                 self.later(lambda: (self.set_busy(None), self.refresh_status()))
         threading.Thread(target=work, daemon=True).start()
+
+    def resume_later(self, fn, label):
+        """할당량은 미국 서부 자정(한국 오후 4~5시)에 다시 찬다. 창이 켜져 있으면 그때 같은 작업을 다시 한다."""
+        now = datetime.now(core.KST)
+        at = now.replace(hour=17, minute=5, second=0, microsecond=0)
+        at += timedelta(days=1) if at <= now else timedelta()
+        self.log(f"창을 켜 두면 {at:%m월 %d일 %H:%M}에 자동으로 이어서 합니다.")
+        self.root.after(int((at - now).total_seconds() * 1000),
+                        lambda: self.busy or self.closing or self.run(fn, label))
+
+    def auto_run(self):
+        def work(app):
+            if self.steps.auto_all(app):
+                app.later(app.pin_window)
+        self.run(work, "한 번에 진행")
 
     def refresh_status(self):
         try:
@@ -326,12 +346,12 @@ class App:
         if not yt.secret_file().exists():
             todo.append("① '안내' → 구글 연동 안내대로 열쇠 파일(client_secret_….json)을 _프로그램 폴더에 넣기")
         if not cfg["channels"]:
-            todo.append("② '설정' → 채널 추가 → 칸 채우기 → 로그인 → 저장")
+            todo.append("② '설정' → 채널 추가 → 브라우저에서 그 채널로 로그인 (이름·공개 시간은 자동으로 채워짐)")
         missing = [ch["name"] for ch in cfg["channels"] if not ch["channel_id"]]
         if missing:
             todo.append(f"③ 로그인이 필요한 채널: {', '.join(missing)} ('설정'에서 채널 선택 → 로그인)")
         self.log("처음 준비할 것:\n  " + "\n  ".join(todo) if todo else
-                 "순서: 0 → 영상 넣고 Studio에 업로드 → 1 → 목록에서 제목 확인 → 2 → 3(고정) → 4")
+                 "순서: 0 → 영상 넣고 Studio에 업로드 → '▶ 한 번에 진행' → 댓글 고정 → 4. 예약 걸기")
 
     def close(self):
         if self.busy and not messagebox.askyesno("닫기", "작업이 진행 중입니다. 정말 닫을까요?\n"
@@ -668,7 +688,8 @@ class Settings:
 
         n = len(FIELDS) + 1
         ttk.Label(form, foreground="#555", justify="left", text=(
-            "※ 보통 바꿀 것: 채널 이름, 공개 요일·시간, 수익 창출·회원 체크. 나머지는 그대로 두면 됩니다.\n"
+            "※ '채널 추가' → 로그인하면 이름·폴더·공개 요일·시간은 YouTube에서 자동으로 채워집니다.\n"
+            "※ 나머지는 그대로 두면 됩니다.\n"
             "※ 제목: '기준 글자 뒤' + ']' → Studio 제목 틀의 ] 바로 뒤에 들어감\n"
             "    예) [숨겨진 동양사] ＜엑셀 제목＞ l 역사 인물 l 고전 | 수면오디오북\n"
             "※ '건들지 않음' = Studio 업로드 기본 설정 그대로 둠")).grid(
@@ -732,6 +753,7 @@ class Settings:
         self.cfg["channels"].append(ch)
         self.saved = False
         self.refresh(len(self.cfg["channels"]) - 1)
+        self.login()  # 이름·공개 시간은 로그인한 채널에서 알아낸다
 
     def duplicate(self):
         if self.cur is None:
@@ -751,6 +773,7 @@ class Settings:
             return
         self.commit()
         ch = self.cfg["channels"][self.cur]
+        had_id = bool(ch["channel_id"])
         messagebox.showinfo("로그인", f"브라우저가 열리면 '{ch['name']}' 채널의 구글 계정으로 로그인하고,\n"
                                     "채널 선택 화면에서 이 채널을 고르세요. (5분 안에)", parent=self.win)
 
@@ -758,21 +781,59 @@ class Settings:
             import yt
             client = yt.build_client(yt.login(ch["key"], interactive=True, fresh=True))
             ch["channel_id"], ch["channel_title"] = yt.whoami(client)
+            try:
+                slots = core.detect_slots(yt.publish_times(client))
+            except Exception:
+                slots = ""  # 못 알아내면 칸은 그대로
+            if had_id:
+                self.note_slots(app, ch, slots)
             disk = core.load_config()  # 창에서 아직 저장 안 한 다른 수정은 건드리지 않는다
             same = next((c for c in disk["channels"] if c["key"] == ch["key"]), None)
             if same:
                 same["channel_id"], same["channel_title"] = ch["channel_id"], ch["channel_title"]
                 core.save_config(disk)
-            else:
-                app.log(f"[{ch['name']}] 새 채널이라 설정 창에서 '저장'을 눌러야 로그인이 기록됩니다.")
             app.log(f"[{ch['name']}] 로그인 완료: YouTube 채널 '{ch['channel_title']}'")
 
             def show():
-                if self.win.winfo_exists():
-                    self.commit()
-                    self.refresh(self.cur or 0)
+                if not self.win.winfo_exists():
+                    return
+                self.commit()
+                if ch not in self.cfg["channels"]:
+                    return
+                self.refresh(self.cfg["channels"].index(ch))
+                if not had_id:
+                    self.fill_from_youtube(ch, slots)
             app.later(show)
         self.app.run(work, "로그인")
+
+    def fill_from_youtube(self, ch, slots):
+        """처음 로그인한 채널: 이름·폴더·공개 시간을 채우고, 새로 추가한 채널이면 두 가지만 물어본 뒤 저장."""
+        v, placeholder = self.vars, r"채널\d+|.* 복사"
+        name = re.sub(r'[\\/:*?"<>|]', "", ch["channel_title"]).strip()
+        is_new = bool(re.fullmatch(placeholder, v["name"].get()))
+        if name and is_new and name not in (c["name"] for c in self.cfg["channels"]):
+            v["name"].set(name)
+        if name and re.fullmatch(placeholder, v["folder"].get()):
+            v["folder"].set(v["name"].get())
+        if slots and is_new:
+            v["slots"].set(slots)
+        if is_new:
+            v["ypp"].set(messagebox.askyesno("채널 정보", f"'{ch['channel_title']}' 채널은 수익 창출(YPP)이 된 채널인가요?",
+                                             parent=self.win))
+            v["members"].set(messagebox.askyesno("채널 정보", "이 채널에서 회원(멤버십) 기능을 쓰나요?", parent=self.win))
+        if self.save():
+            if not is_new:  # 직접 정해 둔 공개 시간은 바꾸지 않고 다르면 알려만 준다
+                return self.note_slots(self.app, ch, slots)
+            self.app.log(f"[{v['name'].get()}] " + (f"최근 공개 기록으로 공개 요일·시간을 '{slots}'로 맞췄습니다." if slots else
+                         f"최근 공개 기록이 부족해 공개 요일·시간은 '{v['slots'].get()}' 그대로입니다. 다르면 설정에서 고쳐주세요."))
+
+    @staticmethod
+    def note_slots(app, ch, slots):
+        try:
+            if slots and set(core.parse_slots(slots)) != set(core.parse_slots(ch["slots"], ch["name"])):
+                app.log(f"[{ch['name']}] 참고: 최근 실제 공개 시간은 '{slots}'인데 설정은 '{ch['slots']}'입니다. 바꾸려면 설정에서 고쳐주세요.")
+        except ValueError:
+            pass
 
     def save(self):
         self.commit()

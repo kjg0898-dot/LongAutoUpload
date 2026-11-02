@@ -203,7 +203,7 @@ def download(url):
     return Image.open(io.BytesIO(_open(req, 60))).convert("RGB")
 
 
-def find_photo(cl, queries, text, title, log=print, per_query=4, limit=6, skip=()):
+def find_photo(cl, queries, text, title, log=print, per_query=4, limit=6, skip=(), desc=""):
     """검색어로 후보를 모아 Claude가 하나 고른다. 맞는 게 없으면 None. (사진, 이름). skip: 빼고 고를 사진 이름"""
     cands, seen = [], set(skip)
     for q in queries[:3]:
@@ -227,6 +227,8 @@ def find_photo(cl, queries, text, title, log=print, per_query=4, limit=6, skip=(
         content += [{"type": "text", "text": f"후보 {i}: {name}"}, image_block(img, 512)]
     content.append({"type": "text", "text": (
         f"유튜브 역사 영상 썸네일 한쪽에 작게 넣을 실제 사진을 고릅니다.\n영상 제목: {title}\n썸네일 문구: {text}\n"
+        f"영상 내용: {desc[:500]}\n"
+        "먼저 이 영상의 시대·나라·사건을 파악하고, 그와 다른 시대·지역의 그림·사진이면 아무리 보기 좋아도 고르지 말 것.\n"
         "기준: 주제와 직접 관련 있음, 작게(가로 500px) 줄여도 무엇인지 한눈에 알아봄 (인물 얼굴·유명한 물건·장면), "
         "잔인하거나 끔찍한 장면·시신·노출 없음, 흐릿하거나 빛바랜 사진·글자만 빽빽한 문서·작은 것이 잔뜩 모인 사진은 피함. "
         "사진 없이도 썸네일은 만들어지니, 확실히 좋은 게 없으면 choice는 -1.")})

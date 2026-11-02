@@ -371,7 +371,7 @@ def _fetch_photo(folder, num, title, desc, text, key, log, force):
     import ai
     cl = ai.client(key)
     queries = ai.queries(cl, title, desc, text)
-    photo, credit = ai.find_photo(cl, queries, text, title, log, skip=old.get("skip", []) + [old.get("credit", "")])
+    photo, credit = ai.find_photo(cl, queries, text, title, log, skip=old.get("skip", []) + [old.get("credit", "")], desc=desc)
     path.parent.mkdir(exist_ok=True)
     note.write_text(json.dumps({"credit": credit, "queries": queries, "none": not photo,
                                 "skip": old.get("skip", []) + ([old["credit"]] if force and old.get("credit") else [])},

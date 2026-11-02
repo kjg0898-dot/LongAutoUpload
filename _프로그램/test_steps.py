@@ -524,7 +524,7 @@ def test_auto_thumbnails_with_claude():
     saved = (ai.client, ai.plan, ai.find_photo, ai.queries)
     ai.client = lambda key: calls.append(("client", key)) or "CL"
     ai.queries = lambda cl, title, desc, text: calls.append(("queries", title)) or ["Seoul 1950"]
-    ai.plan = lambda cl, base, text, title, desc, opts, recent=(): calls.append(("plan", text)) or {
+    ai.plan = lambda cl, base, text, title, desc, opts, recent=(), ctr="": calls.append(("plan", text)) or {
         "side": "right", "accents": ["명언"], "queries": []}
     ai.find_photo = lambda cl, queries, text, title, log, skip=(): calls.append(("photo", queries)) or (
         Image.new("RGB", (800, 600), "red"), "File:Seoul.jpg")
@@ -579,6 +579,55 @@ def test_thumbnail_variety():
         assert out.convert("RGB").getpixel((180, 200))[0] < 200  # 이 자리는 실제 사진을 넣지 않음
         bad = thumbs.compose(ch, base, "적군은 왜 백기를", {"lines": ["적군은", "다른 말"]}, None, random.Random(0)).info["layout"]
         assert "다른 말" not in bad["lines"]  # 글자를 바꾼 줄 나눔은 버림
+
+
+def test_thumbnail_ctr():
+    """올린 자동 썸네일의 조합을 적어 두고, YouTube 클릭률 보고서와 맞춰 조합별 클릭률 → 좋았던 자리를 더 자주."""
+    import random
+    import thumbs
+    from googleapiclient.errors import HttpError
+    from types import SimpleNamespace as NS
+    with tempfile.TemporaryDirectory() as d:
+        setup(d)
+        ui = UI()
+        thumbs.TEMPLATE_DIR = Path(d) / "틀"
+        ch = core.load_config()["channels"][0] | {"thumb_auto": True}
+        cfg = core.load_config()
+        cfg["channels"][0] = ch
+        core.save_config(cfg)
+        layouts = ["아래", "아래", "아래", "위", "위", "위"]
+        for i, lay in enumerate(layouts):
+            jpg = Path(d) / f"{i}_자동썸네일.jpg"
+            jpg.with_suffix(".json").write_text(json.dumps({"used": {"layout": lay, "font": "A.ttf", "style": 0}}), "utf-8")
+            thumbs.remember_upload(ch, f"v{i}", jpg)
+        head = "date,channel_id,video_id,video_thumbnail_impressions,video_thumbnail_impressions_ctr\n"
+        rows = "".join(f"20261101,UC1,v{i},1000,{0.08 if lay == '위' else 0.04}\n" for i, lay in enumerate(layouts))
+        calls = []
+        saved = (steps.yt.login, steps.yt.reach_reports)
+        steps.yt.login = lambda key, interactive=True: "CREDS"
+        steps.yt.reach_reports = lambda creds, after="": calls.append(after) or [
+            {"id": "r1", "createTime": "2026-11-02T00:00:00Z", "csv": head + rows + "20261101,UC1,v9,5000,0.5\n"}]
+        try:
+            steps.update_ctr(ui)
+            stats = thumbs.ctr_stats(ch)
+            assert stats["layout"] == {"위": (8.0, 3), "아래": (4.0, 3)}, stats  # 비율이면 %로, 기록 없는 v9는 뺌
+            assert "위 8.0% (3편)" in thumbs.ctr_text(stats) and "클릭률 보고서 1개" in "\n".join(ui.logs)
+            b = thumbs.boost(stats["layout"])
+            assert b["위"] > 1 > b["아래"], b
+            steps.update_ctr(ui)
+            assert calls == ["", "2026-11-02T00:00:00Z"]  # 두 번째는 새 보고서만
+            # Claude 없이도 클릭률 좋았던 자리를 더 자주
+            tpl = {"layouts": [{"name": "아래"}, {"name": "위"}]}
+            picks = [random.Random(i).choices(tpl["layouts"], weights=[b.get(x["name"], 1) for x in tpl["layouts"]])[0]["name"]
+                     for i in range(300)]
+            assert picks.count("위") > picks.count("아래")
+            # 권한이 없으면 다시 로그인하라고 알려줌 (멈추지 않음)
+            err = HttpError(NS(status=403, reason="Forbidden"), b'{"error": {"errors": [{"reason": "insufficientPermissions"}], "message": "Request had insufficient authentication scopes."}}')
+            steps.yt.reach_reports = lambda creds, after="": (_ for _ in ()).throw(err)
+            steps.update_ctr(ui)
+            assert "다시 로그인" in ui.logs[-1], ui.logs[-1]
+        finally:
+            steps.yt.login, steps.yt.reach_reports = saved
 
 
 def test_ai_request_and_commons_filter():

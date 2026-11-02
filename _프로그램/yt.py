@@ -1,4 +1,6 @@
 """YouTube Data API 호출. 공식 API만 쓴다."""
+import json
+import os
 import random
 import time
 from datetime import datetime, timezone
@@ -13,7 +15,8 @@ def secret_file():
     found = sorted(PROG.glob("client_secret*.json"))
     return SECRET if SECRET.exists() else found[0] if found else SECRET
 TOKENS = PROG / "토큰"
-SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
+SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl",
+          "https://www.googleapis.com/auth/yt-analytics.readonly"]  # 썸네일 클릭률 보고서 (YouTube Reporting API)
 # videos.update에 보내면 안 되는(읽기 전용) 필드
 READONLY_SNIPPET = {"thumbnails", "channelId", "channelTitle", "publishedAt", "liveBroadcastContent", "localized"}
 WRITABLE_STATUS = {"privacyStatus", "publishAt", "license", "embeddable", "publicStatsViewable",
@@ -35,7 +38,8 @@ def login(key, interactive=True, fresh=False):
     token = TOKENS / f"{key}.json"
     if fresh:
         token.unlink(missing_ok=True)
-    creds = Credentials.from_authorized_user_file(token, SCOPES) if token.exists() else None
+    # 저장된 로그인은 받을 때 허용된 권한 그대로 (예전 로그인에 새 권한을 붙여 갱신하면 구글이 거절함)
+    creds = Credentials.from_authorized_user_file(token) if token.exists() else None
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
@@ -48,8 +52,13 @@ def login(key, interactive=True, fresh=False):
             raise FileNotFoundError(f"열쇠 파일(client_secret_….json)이 없습니다. 구글연동_안내.md 4번대로 받아서 이 폴더에 넣어주세요: {PROG}")
         try:
             # 매번 계정·채널 선택 화면을 띄워 원하는 채널을 고르게 한다. 5분 안에 안 끝나면 포기
-            creds = InstalledAppFlow.from_client_secrets_file(secret_file(), SCOPES).run_local_server(
-                port=0, prompt="select_account consent", timeout_seconds=300)
+            os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")  # 통계 권한 체크를 빼고 허용해도 로그인은 되게
+            flow = InstalledAppFlow.from_client_secrets_file(secret_file(), SCOPES)
+            creds = flow.run_local_server(port=0, prompt="select_account consent", timeout_seconds=300)
+            granted = flow.oauth2session.token.get("scope")
+            if creds and granted:  # 실제로 허용된 권한만 적어 둔다
+                info = json.loads(creds.to_json()) | {"scopes": granted.split() if isinstance(granted, str) else list(granted)}
+                creds = Credentials.from_authorized_user_info(info)
         except Exception as e:
             raise RuntimeError(f"로그인을 마치지 못했습니다(5분이 지났거나 창을 닫음). 다시 눌러주세요. ({e})") from None
         if not creds or not creds.valid:
@@ -160,6 +169,31 @@ def execute(request, retry=(409, 429, 500, 503), waits=(3, 10, 30)):
             if wait is None or is_quota(e) or not (code in retry or rate_limited):
                 raise
             time.sleep(wait + random.random() * 2)
+
+
+REACH = "channel_reach_basic_a1"  # 영상별·날짜별 썸네일 노출 수와 클릭률
+
+
+def reach_reports(creds, after=""):
+    """썸네일 클릭률 보고서 (하루에 CSV 하나). 처음이면 보고서 작업을 만든다:
+    지난 30일치는 며칠 안에, 그 뒤로는 매일 이틀 늦게 나온다. after: 이 시각 뒤에 만들어진 것만 [{id, createTime, csv}]"""
+    from google.auth.transport.requests import AuthorizedSession
+    from googleapiclient.discovery import build
+    rep = build("youtubereporting", "v1", credentials=creds, cache_discovery=False)
+    job = next((j for j in execute(rep.jobs().list()).get("jobs", []) if j["reportTypeId"] == REACH), None) \
+        or execute(rep.jobs().create(body={"reportTypeId": REACH, "name": "LongAutoUpload 썸네일 클릭률"}))
+    found, page = [], None
+    while True:
+        res = execute(rep.jobs().reports().list(jobId=job["id"], pageToken=page, **({"createdAfter": after} if after else {})))
+        found += res.get("reports", [])
+        if not (page := res.get("nextPageToken")):
+            break
+    session = AuthorizedSession(creds)
+    for r in found:
+        res = session.get(r["downloadUrl"], timeout=60)
+        res.raise_for_status()
+        r["csv"] = res.content.decode("utf-8-sig")
+    return found
 
 
 def set_thumbnail(yt, video_id, path):

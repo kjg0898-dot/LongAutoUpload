@@ -325,6 +325,9 @@ def fill_all(ui):
                 yt.update_video(client, video, *_compose(ch, r, core.save_original(video)))
                 if r["썸네일"] not in ("", "없음"):
                     yt.set_thumbnail(client, video["id"], core.VIDEO_DIR / r["썸네일"])
+                    if ch["thumb_auto"]:
+                        import thumbs
+                        thumbs.remember_upload(ch, video["id"], core.VIDEO_DIR / r["썸네일"])
                 for playlist in core.playlist_ids(ch["playlist"]):
                     yt.add_to_playlist(client, playlist, video["id"])
                 r["상태"] = "정보완료"
@@ -385,7 +388,34 @@ def auto_all(ui):
             if made and not ui.review_thumbs(made):
                 return ui.log("썸네일 확인을 취소했습니다. 문구를 고친 뒤 '2. 자동 처리'를 다시 누르세요.")
     fill_all(ui)
+    update_ctr(ui)
     return bool(pin_targets(core.read_rows(), core.load_config()))
+
+
+def update_ctr(ui):
+    """썸네일 자동 만들기 채널마다 YouTube 썸네일 클릭률 보고서를 받아 쌓는다 (다음 썸네일을 고를 때 씀). 실패해도 작업은 계속."""
+    import thumbs
+    for ch in core.load_config()["channels"]:
+        if not (ch["thumb_auto"] and ch["channel_id"]):
+            continue
+        try:
+            data = thumbs.load_ctr(ch)
+            reports = yt.reach_reports(yt.login(ch["key"], interactive=False), data["after"])
+            if reports:
+                thumbs.add_reach(ch, reports)
+                text = thumbs.ctr_text(thumbs.ctr_stats(ch))
+                ui.log(f"[{ch['name']}] 썸네일 클릭률 보고서 {len(reports)}개를 받았습니다" + (f": {text}" if text else ""))
+        except yt.NotLoggedIn:
+            continue
+        except Exception as e:
+            why = yt.error_text(e)
+            if "insufficient" in why.lower() or "SCOPE" in why:
+                ui.log(f"[{ch['name']}] 썸네일 클릭률: 설정에서 이 채널을 한 번 다시 로그인하면 받아옵니다.")
+            elif "accessNotConfigured" in why or "SERVICE_DISABLED" in why or "has not been used" in why:
+                ui.log("썸네일 클릭률: Google Cloud에서 'YouTube Reporting API'를 사용으로 켜주세요 (구글연동_안내.md 2번).")
+                return
+            else:
+                ui.log(f"[{ch['name']}] (썸네일 클릭률을 못 받았습니다: {why})")
 
 
 def make_thumbnails(ui, rows, targets, force=False):

@@ -754,12 +754,16 @@ def candidates(text):
     return [x.split(". ", 1)[-1] for x in text.splitlines() if x.strip()]
 
 
+FINDING = set()  # 실제 사진을 찾는 중인 (채널 폴더, 순번): 준비 화면을 다시 열어도 또 찾지 않게
+
+
 class PrepWindow:
     """1. 준비 화면: 채널별 탭에 SEO 항목(영상)마다 후보 그림 고르기, 제목·썸네일 문구 고치기, 설명·댓글 보기,
     실제 사진(주제마다 1장, 자동)과 최종 썸네일. 고친 것은 바로 채널 폴더/제작.json 에 저장된다."""
     PREVIEW, FINAL = 200, 320
 
     def __init__(self, app):
+        import thumbs
         app.prep, self.app = self, app
         self.cfg = core.load_config()
         win = self.win = tk.Toplevel(app.root)
@@ -785,6 +789,9 @@ class PrepWindow:
             if not ch["thumb_auto"]:
                 ttk.Label(tab, foreground=COLORS["muted"], padding=6, text=(
                     "이 채널은 썸네일을 직접 만든 완성본으로 넣습니다 (설정에서 '썸네일 자동 만들기'를 켜면 여기서 후보를 골라 만듭니다).")).pack(anchor="w")
+            elif ctr := thumbs.ctr_text(thumbs.ctr_stats(ch)):
+                ttk.Label(tab, foreground=COLORS["muted"], padding=6, wraplength=room, text=(
+                    "지난 썸네일 클릭률 (좋았던 쪽을 더 자주 고릅니다): " + ctr)).pack(anchor="w")
             inner = scroll_area(tab)
             self.canvases.append(inner.master)
             for i, item in enumerate(items):
@@ -994,13 +1001,20 @@ class PrepWindow:
         key = self.cfg.get("claude_key", "")
         if not (key or os.environ.get("ANTHROPIC_API_KEY")):
             return
-        todo = [c for c in (cards or self.cards.values()) if c["ch"]["thumb_auto"] and (force or not c["item"]["실제사진"])]
+        # 후보 그림을 넣은 영상만 (아직 그림이 없는 영상까지 찾으면 Claude 비용만 듦), 이미 찾는 중인 것은 빼고
+        todo = [c for c in (cards or self.cards.values()) if c["ch"]["thumb_auto"] and c["item"]["선택"]
+                and (force or not c["item"]["실제사진"]) and (c["folder"], c["item"]["num"]) not in FINDING]
         todo = [c for c in todo if force or not (c["folder"] / core.PHOTOS / f"{c['item']['num']}.json").exists()]
         if todo:
+            FINDING.update((c["folder"], c["item"]["num"]) for c in todo)
             self.app.log(f"실제 사진을 찾습니다: {len(todo)}개 주제")
-            self._background(todo, lambda c: thumbs.fetch_photo(
-                c["folder"], c["item"]["num"], c["item"]["제목"], c["item"]["설명"], c["item"]["썸네일문구"],
-                key, self.app.log, force), "실제 사진 찾기")
+            def find(c):
+                try:
+                    thumbs.fetch_photo(c["folder"], c["item"]["num"], c["item"]["제목"], c["item"]["설명"],
+                                       c["item"]["썸네일문구"], key, self.app.log, force)
+                finally:
+                    FINDING.discard((c["folder"], c["item"]["num"]))
+            self._background(todo, find, "실제 사진 찾기")
 
     def make(self, c, force=False):
         self.make_all([c], force)

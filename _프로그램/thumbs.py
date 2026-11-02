@@ -2,11 +2,13 @@
 글자는 AI가 그리지 않고 폰트로 찍는다 (한글이 깨지지 않게). 채널 마크는 항상 같은 파일을 같은 자리에 그대로 붙인다.
 매번 조금씩 다르게: 글씨 색 조합·글자 쪽(왼/오른)·크기·사진 기울기가 틀이 정한 범위 안에서 바뀐다."""
 import io
+import csv
 import json
 import os
 import random
 import re
 import sys
+import threading
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -149,7 +151,7 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
         lay = next((x for x in layouts if x["name"] == plan.get("layout")), None)
         if not lay:
             pool = [x for x in layouts if x["name"] not in plan.get("avoid", [])] or layouts
-            lay = rnd.choices(pool, weights=[x.get("weight", 1) for x in pool])[0]
+            lay = rnd.choices(pool, weights=[x.get("weight", 1) * plan.get("boost", {}).get(x["name"], 1) for x in pool])[0]
         t.update({k: lay[k] for k in ("box", "valign") if k in lay})
         t["sides"], spots_ok = [lay.get("align", "center")], lay.get("spots")
         plan = plan | {"side": t["sides"][0], "layout": lay["name"]}
@@ -393,16 +395,21 @@ def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=
     if not force and path.exists() and note.exists() and json.loads(note.read_text("utf-8")).get("sig") == sig:
         return path
     plan, review = {}, None
-    recent = used_before(folder, path)
     use_ai = bool(key or os.environ.get("ANTHROPIC_API_KEY"))
-    if use_ai:
-        import ai
-        plan = ai.plan(ai.client(key), base, text, title, desc, options(ch, tpl), recent)
-    else:  # Claude 없이: 최근 두 편에 쓴 글자 자리는 피해서
-        plan = {"avoid": [r.get("layout") for r in recent[-2:]]}
-    img = compose(ch, base, text, plan, photo, rnd)
-    lay = img.info["layout"]
-    used = {"layout": lay["name"], "font": lay["font"], "style": lay["style"], "lines": lay["lines"]}
+    made = _MADE.setdefault(str(folder), {})
+    with _LOCKS.setdefault(str(folder), threading.Lock()):  # 같은 채널은 디자인을 차례로 정한다 (동시에 만든 편끼리도 안 겹치게)
+        recent = used_before(folder, path, skip=made) + [u for p, u in made.items() if p != path]
+        stats = ctr_stats(ch)
+        if use_ai:
+            import ai
+            plan = ai.plan(ai.client(key), base, text, title, desc, options(ch, tpl), recent[-4:], ctr_text(stats))
+        else:  # Claude 없이: 최근 두 편에 쓴 글자 자리는 피하고, 클릭률이 좋았던 자리를 더 자주
+            plan = {"avoid": [r.get("layout") for r in recent[-2:]], "boost": boost(stats.get("layout", {}))}
+        img = compose(ch, base, text, plan, photo, rnd)
+        lay = img.info["layout"]
+        used = {"layout": lay["name"], "font": lay["font"], "style": lay["style"], "lines": lay["lines"]}
+        made.pop(path, None)
+        made[path] = {k: used[k] for k in ("layout", "font", "style")}
     checks, points = check(img)
     if use_ai:
         try:
@@ -427,9 +434,13 @@ def options(ch, tpl):
     return out
 
 
-def used_before(folder, path, n=4):
-    """같은 채널 폴더에서 먼저 만든 최종 썸네일들이 쓴 조합 (오래된 것부터, 최근 n개)."""
-    notes = sorted((q for q in Path(folder).glob("*_자동썸네일.json") if q != path.with_suffix(".json")),
+_LOCKS, _MADE = {}, {}  # 채널 폴더마다: 디자인 정하는 차례, 이번에 프로그램이 만든 조합 {그림 경로: 조합}
+
+
+def used_before(folder, path, n=4, skip=()):
+    """같은 채널 폴더에서 먼저 만든 최종 썸네일들이 쓴 조합 (오래된 것부터, 최근 n개). skip: 뺄 그림 경로들"""
+    notes = sorted((q for q in Path(folder).glob("*_자동썸네일.json")
+                    if q != path.with_suffix(".json") and q.with_suffix(".jpg") not in skip),
                    key=lambda q: q.stat().st_mtime)
     out = []
     for q in notes[-n:]:
@@ -440,6 +451,81 @@ def used_before(folder, path, n=4):
         if u:
             out.append({k: u[k] for k in ("layout", "font", "style") if k in u})
     return out
+
+
+# ---------- 클릭률: 올린 썸네일의 조합 ↔ YouTube 썸네일 클릭률 ----------
+def _ctr_file(ch):
+    return template_dir(ch) / "클릭률.json"  # 틀 폴더에 둔다: 청소·업데이트에 지워지지 않게
+
+
+def load_ctr(ch):
+    f = _ctr_file(ch)
+    data = json.loads(f.read_text("utf-8")) if f.exists() else {}
+    return {"designs": {}, "days": {}, "after": ""} | data
+
+
+def _save_ctr(ch, data):
+    _ctr_file(ch).parent.mkdir(parents=True, exist_ok=True)
+    _ctr_file(ch).write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+
+
+def remember_upload(ch, video_id, path):
+    """자동 썸네일을 영상에 넣을 때: 그 영상이 쓴 조합(자리·글씨체·색)을 적어 둔다 (나중에 클릭률과 맞춰 봄)."""
+    note = Path(path).with_suffix(".json")
+    used = json.loads(note.read_text("utf-8")).get("used") if note.exists() else None
+    if used:
+        data = load_ctr(ch)
+        data["designs"][video_id] = used
+        _save_ctr(ch, data)
+
+
+def add_reach(ch, reports):
+    """YouTube 클릭률 보고서(CSV)를 날짜별로 쌓는다. 같은 날 보고서가 다시 오면(보정) 덮어쓴다."""
+    data = load_ctr(ch)
+    for r in sorted(reports, key=lambda r: r["createTime"]):
+        for row in csv.DictReader(io.StringIO(r["csv"])):
+            vid, impr = row.get("video_id"), int(float(row.get("video_thumbnail_impressions") or 0))
+            if vid and impr:
+                data["days"].setdefault(vid, {})[row["date"]] = [impr, float(row.get("video_thumbnail_impressions_ctr") or 0)]
+        data["after"] = max(data["after"], r["createTime"])
+    _save_ctr(ch, data)
+    return data
+
+
+def ctr_stats(ch, min_impr=300):
+    """조합별 클릭률: {'layout': {'아래_가운데': (평균 %, 영상 수)}, 'font': …, 'style': …}.
+    노출이 min_impr번 넘은 영상만, 영상마다 같은 무게로 (조회수 큰 한 편이 다 정하지 않게)."""
+    data = load_ctr(ch)
+    rates = {}
+    for vid, days in data["days"].items():
+        impr = sum(i for i, _ in days.values())
+        if vid in data["designs"] and impr >= min_impr:
+            rates[vid] = sum(i * c for i, c in days.values()) / impr
+    # shortcut: 보고서의 클릭률이 비율(0.05)인지 퍼센트(5)인지 문서에 없어, 1보다 큰 값이 있으면 퍼센트로 본다
+    scale = 1 if any(r > 1 for r in rates.values()) else 100
+    out = {}
+    for key in ("layout", "font", "style"):
+        groups = {}
+        for vid, rate in rates.items():
+            groups.setdefault(str(data["designs"][vid].get(key)), []).append(rate * scale)
+        out[key] = {v: (round(sum(rs) / len(rs), 2), len(rs)) for v, rs in groups.items()}
+    return out
+
+
+def boost(groups, least=3):
+    """클릭률이 평균보다 좋았던 값은 더 자주 (0.5~2배). 영상이 least편 미만인 값은 그대로."""
+    known = {v: r for v, (r, n) in groups.items() if n >= least}
+    if len(known) < 2:
+        return {}
+    mean = sum(known.values()) / len(known)
+    return {v: min(2.0, max(0.5, r / mean)) for v, r in known.items()} if mean else {}
+
+
+def ctr_text(stats):
+    """사람(과 Claude)이 읽는 한 줄: '글자 자리 아래_가운데 5.1% (6편) · …'"""
+    names = {"layout": "글자 자리", "font": "글씨체", "style": "색 조합"}
+    parts = [f"{names[k]} {v} {r}% ({n}편)" for k, g in stats.items() for v, (r, n) in sorted(g.items(), key=lambda x: -x[1][0])]
+    return " · ".join(parts)
 
 
 def examples(ch, n=3):

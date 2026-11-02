@@ -2,6 +2,7 @@
 import base64
 import io
 import json
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -70,7 +71,7 @@ def _schema(props, required=None):
     return {"type": "object", "properties": props, "required": required or list(props), "additionalProperties": False}
 
 
-def plan(cl, base, text, title, desc, opts, recent=()):
+def plan(cl, base, text, title, desc, opts, recent=(), ctr=""):
     """이번 편의 디자인: 글자 자리·줄 나눔·강조할 말·색 조합·글씨체·크기·실제 사진 자리·검색어.
     opts: thumbs.options()가 만든 고를 거리, recent: 같은 채널에서 최근 쓴 조합 (되풀이하지 않게)."""
     layouts, fonts, styles, spots = opts.get("layouts", []), opts.get("fonts", []), opts.get("styles", []), opts.get("spots", [])
@@ -107,6 +108,9 @@ def plan(cl, base, text, title, desc, opts, recent=()):
         ask_text.append("이 채널에서 최근 만든 썸네일들의 조합 (같은 조합을 되풀이하지 말고 자리·색·글씨체 중 둘 이상은 다르게. "
                         "단 이 사진에 안 맞으면 억지로 바꾸지 말 것): "
                         + " / ".join(json.dumps(r, ensure_ascii=False) for r in recent))
+    if ctr:
+        ask_text.append("이 채널 지난 영상들의 실제 썸네일 클릭률 (영상마다 평균, 괄호는 영상 수): " + ctr
+                        + ". 클릭률이 높았던 자리·색·글씨체를 더 자주 고르되, 영상 수가 적으면 참고만 하고 이 사진에 안 맞으면 쓰지 말 것.")
     out = ask(cl, [image_block(base), {"type": "text", "text": "\n".join(ask_text)}], _schema(props))
     out["accents"] = [a for a in out.get("accents", []) if a.strip() and a.strip() in text]  # 문구에 없는 말은 버림
     return out
@@ -156,6 +160,24 @@ def score(cl, img, title, text, desc, examples=(), checks=()):
     return out
 
 
+_GATE, _LAST = threading.Lock(), [0.0]
+
+
+def _open(req, timeout):
+    """위키미디어 요청: 한 번에 하나씩, 1초 간격 (여럿을 한꺼번에 보내면 429로 막힘). 429면 잠깐 쉬었다가 다시."""
+    for attempt in range(3):
+        with _GATE:
+            time.sleep(max(0.0, _LAST[0] + 1.0 - time.time()))
+            _LAST[0] = time.time()
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as res:
+                return res.read()
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or attempt == 2:
+                raise
+            time.sleep(min(int(e.headers.get("Retry-After") or 5), 20))
+
+
 def search_commons(query, limit=6):
     """위키미디어 공용에서 저작권이 풀린(퍼블릭 도메인·CC0) 사진만. [{'title', 'url'}]"""
     # 썸네일은 위키미디어 표준 크기(960)로 받는다: 다른 크기는 서버가 막을 수 있음 (https://w.wiki/GHai)
@@ -163,15 +185,7 @@ def search_commons(query, limit=6):
               "gsrsearch": f"{query} filetype:bitmap", "prop": "imageinfo", "iiprop": "url|extmetadata|size",
               "iiurlwidth": 960, "iiextmetadatafilter": "LicenseShortName|Copyrighted"}
     req = urllib.request.Request(f"{COMMONS}?{urllib.parse.urlencode(params)}", headers={"User-Agent": UA})
-    for attempt in range(3):  # 요청이 몰렸다(429)고 하면 잠깐 쉬었다가 다시
-        try:
-            with urllib.request.urlopen(req, timeout=30) as res:
-                pages = json.load(res).get("query", {}).get("pages", {})
-            break
-        except urllib.error.HTTPError as e:
-            if e.code != 429 or attempt == 2:
-                raise
-            time.sleep(min(int(e.headers.get("Retry-After") or 5), 20))
+    pages = json.loads(_open(req, 30)).get("query", {}).get("pages", {})
     out = []
     for p in sorted(pages.values(), key=lambda p: p.get("index", 0)):
         info = (p.get("imageinfo") or [{}])[0]
@@ -184,14 +198,7 @@ def search_commons(query, limit=6):
 
 def download(url):
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    for attempt in range(3):  # 요청이 몰렸다(429)고 하면 잠깐 쉬었다가 다시
-        try:
-            with urllib.request.urlopen(req, timeout=60) as res:
-                return Image.open(io.BytesIO(res.read())).convert("RGB")
-        except urllib.error.HTTPError as e:
-            if e.code != 429 or attempt == 2:
-                raise
-            time.sleep(min(int(e.headers.get("Retry-After") or 5), 20))
+    return Image.open(io.BytesIO(_open(req, 60))).convert("RGB")
 
 
 def find_photo(cl, queries, text, title, log=print, per_query=4, limit=6, skip=()):

@@ -112,6 +112,12 @@ def _segments(line, accents):
     return out
 
 
+def _even(lines):
+    """줄 길이가 고른 정도: 가장 짧은 줄 ÷ 가장 긴 줄 (한 줄이면 1)."""
+    n = [len(s.replace(" ", "")) for s in lines if s.strip()] or [1]
+    return min(n) / max(n)
+
+
 def _squash(lines):
     return re.sub(r"[\s/]+", "", "".join(lines))
 
@@ -142,7 +148,8 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
     tpl, plan = load_template(ch), plan or {}
     t = dict(tpl["text"])
     lines = [s.strip() for s in (text or "").replace("\\n", "/").split("/") if s.strip()]  # 비면 글자 없이 (후보 미리보기)
-    if plan.get("lines") and _squash(plan["lines"]) == _squash(lines):  # Claude가 나눈 줄 (글자는 그대로일 때만)
+    if plan.get("lines") and _squash(plan["lines"]) == _squash(lines) and _even(plan["lines"]) >= min(_even(lines), 0.6):
+        # Claude가 나눈 줄: 글자는 그대로이고, 한 줄만 너무 짧지 않을 때만
         lines = [s.strip() for s in plan["lines"] if s.strip()]
     if len(lines) > t["max_lines"]:
         raise ValueError(f"썸네일 문구가 {len(lines)}줄입니다 (이 채널은 {t['max_lines']}줄까지).")
@@ -345,7 +352,13 @@ def save(img, path):
 
 def fetch_photo(folder, num, title, desc, text, key="", log=print, force=False):
     """주제마다 실제 사진 1장 (위키미디어 공용, 저작권 풀린 것만): 채널 폴더/실제사진/<순번>.jpg. 없으면 None.
-    한 번 찾으면 다시 찾지 않는다 (force면 새로, 앞에서 고른 것은 빼고)."""
+    한 번 찾으면 다시 찾지 않는다 (force면 새로, 앞에서 고른 것은 빼고).
+    준비 화면과 최종 만들기가 같은 영상을 동시에 찾으면 하나가 끝날 때까지 기다렸다가 그 결과를 쓴다 (Claude 비용 두 번 안 듦)."""
+    with _LOCKS.setdefault(("사진", str(folder), num), threading.Lock()):
+        return _fetch_photo(folder, num, title, desc, text, key, log, force)
+
+
+def _fetch_photo(folder, num, title, desc, text, key, log, force):
     path = Path(folder) / core.PHOTOS / f"{num}.jpg"
     note = path.with_suffix(".json")
     old = json.loads(note.read_text("utf-8")) if note.exists() else {}
@@ -429,7 +442,9 @@ def options(ch, tpl):
            "fonts": sorted({p.name for p in fonts(ch, tpl)}),
            "styles": [s.get("_설명") or f"줄 색 {s.get('line_fills') or s.get('fill')}, 강조 {s.get('accent')}" for s in tpl["styles"]]}
     if tpl.get("layouts"):
-        out["layouts"] = [(x["name"], x.get("_설명", "") + (f" (사진 자리 {x['spots']}번만)" if x.get("spots") is not None else ""))
+        total = sum(x.get("weight", 1) for x in tpl["layouts"])
+        out["layouts"] = [(x["name"], x.get("_설명", "") + f" (이 채널에서 약 {x.get('weight', 1) / total:.0%}, 글자 칸 폭 {x['box'][2]}px)"
+                           + (f" (사진 자리 {x['spots']}번만)" if x.get("spots") is not None else ""))
                           for x in tpl["layouts"]]
     return out
 

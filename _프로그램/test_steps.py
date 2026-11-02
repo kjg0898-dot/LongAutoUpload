@@ -579,6 +579,8 @@ def test_thumbnail_variety():
         assert out.convert("RGB").getpixel((180, 200))[0] < 200  # 이 자리는 실제 사진을 넣지 않음
         bad = thumbs.compose(ch, base, "적군은 왜 백기를", {"lines": ["적군은", "다른 말"]}, None, random.Random(0)).info["layout"]
         assert "다른 말" not in bad["lines"]  # 글자를 바꾼 줄 나눔은 버림
+        odd = thumbs.compose(ch, base, "적은 침상 / 밑에 있었다", {"lines": ["적은 침상 밑에", "있었다"]}, None, random.Random(0)).info["layout"]
+        assert odd["lines"] == ["적은 침상", "밑에 있었다"], odd["lines"]  # 한 줄만 짧게 나눈 것은 버림
 
 
 def test_thumbnail_ctr():

@@ -79,12 +79,14 @@ def plan(cl, base, text, title, desc, opts, recent=(), ctr=""):
         "유튜브 썸네일을 만듭니다. 첨부한 사진이 배경이고, 그 위에 아래 문구를 크게 넣습니다. "
         "썸네일은 영상 클릭을 정하는 가장 중요한 요소입니다. 이 사진과 문구에 가장 잘 맞게, 그리고 이 채널의 다른 편과 너무 똑같지 않게 정해주세요.",
         f"문구 (/ 는 줄바꿈): {text}\n영상 제목: {title}\n영상 설명: {desc[:600]}\n",
-        "lines: 문구를 몇 줄로 어디서 나눌지 (1~%d줄). 글자는 문구 그대로, 띄어쓰기만 바꿔 나눔. 의미가 끊기지 않게, 줄 길이가 비슷하게." % opts.get("max_lines", 2),
+        "lines: 문구를 몇 줄로 어디서 나눌지 (1~%d줄). 글자는 문구 그대로, 띄어쓰기만 바꿔 나눔. 의미가 끊기지 않게, "
+        "줄 길이가 비슷하게 (한 줄이 다른 줄의 절반보다 짧으면 안 됨)." % opts.get("max_lines", 2),
         "accents: 다른 색으로 강조할 핵심 말 1~2개 (숫자·인물·반전 같은 궁금증을 만드는 말). 문구에 있는 글자 그대로."]
     props = {"lines": {"type": "array", "items": {"type": "string"}}, "accents": {"type": "array", "items": {"type": "string"}},
              "queries": {"type": "array", "items": {"type": "string"}}}
     if layouts:
-        ask_text.append("layout: 문구를 놓을 자리. 사진 속 사람 얼굴이나 핵심 대상을 가리지 않는 곳. "
+        ask_text.append("layout: 문구를 놓을 자리. 사진 속 사람 얼굴이나 핵심 대상을 가리지 않는 곳. 채널 통일감을 위해 비율을 대략 지키고, "
+                        "자리가 좁으면 글자가 작아지니 문구가 길면(한 줄 8자 넘음) 넓은 자리를 고를 것. "
                         + "; ".join(f"{n} = {d}" for n, d in layouts))
         props["layout"] = {"type": "string", "enum": [n for n, _ in layouts]}
     else:
@@ -225,8 +227,9 @@ def find_photo(cl, queries, text, title, log=print, per_query=4, limit=6, skip=(
         content += [{"type": "text", "text": f"후보 {i}: {name}"}, image_block(img, 512)]
     content.append({"type": "text", "text": (
         f"유튜브 역사 영상 썸네일 한쪽에 작게 넣을 실제 사진을 고릅니다.\n영상 제목: {title}\n썸네일 문구: {text}\n"
-        "기준: 주제와 직접 관련 있음, 작게 줄여도 알아보기 쉬움, 잔인하거나 끔찍한 장면·시신·노출 없음, "
-        "글자만 빽빽한 문서는 피함. 알맞은 게 없으면 choice는 -1.")})
+        "기준: 주제와 직접 관련 있음, 작게(가로 500px) 줄여도 무엇인지 한눈에 알아봄 (인물 얼굴·유명한 물건·장면), "
+        "잔인하거나 끔찍한 장면·시신·노출 없음, 흐릿하거나 빛바랜 사진·글자만 빽빽한 문서·작은 것이 잔뜩 모인 사진은 피함. "
+        "사진 없이도 썸네일은 만들어지니, 확실히 좋은 게 없으면 choice는 -1.")})
     pick = ask(cl, content, _schema({"choice": {"type": "integer"}, "reason": {"type": "string"}}))
     i = pick.get("choice", -1)
     if not 0 <= i < len(cands):

@@ -1372,7 +1372,7 @@ class Settings:
         self.key = tk.StringVar(value=self.cfg["claude_key"])
         self.key.trace_add("write", lambda *a: setattr(self, "saved", False))
         ttk.Label(adv, text="Claude API 키 (썸네일 자동 만들기)").grid(row=m + 2, column=0, sticky="w", pady=2)
-        ttk.Entry(adv, textvariable=self.key, width=40, show="•").grid(row=m + 2, column=1, sticky="w")
+        ttk.Entry(adv, textvariable=self.key, width=40).grid(row=m + 2, column=1, sticky="w")
         ttk.Button(adv, text="이 채널 썸네일 틀 폴더 열기 (로고·폰트)", command=self.open_template).grid(
             row=m + 3, column=1, sticky="w", pady=4)
         ttk.Label(adv, foreground="#555", justify="left", text=(

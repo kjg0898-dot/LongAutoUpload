@@ -70,9 +70,19 @@ class App:
         top = ttk.Frame(root, padding=(12, 10, 12, 4))
         top.pack(fill="x")
         ttk.Label(top, text="롱폼 자동 업로드", font=(FONT, 15, "bold")).pack(side="left")
-        for text, cmd in (("청소", self.clean_window), ("업데이트", self.update), ("기록", lambda: self.open_dir(core.LOG_DIR)),
-                          ("완료 폴더", lambda: self.open_dir(core.DONE_DIR)), ("영상 폴더", lambda: self.open_dir(core.VIDEO_DIR)),
-                          ("안내", self.open_help), ("⚙ 설정", self.open_settings)):
+        # 자주 안 쓰는 것은 '더보기'에 모은다
+        more = ttk.Menubutton(top, text="더보기 ▾")
+        menu = tk.Menu(more, tearoff=0)
+        for item in (("영상 폴더 열기", lambda: self.open_dir(core.VIDEO_DIR)),
+                          ("완료 폴더 열기", lambda: self.open_dir(core.DONE_DIR)),
+                          ("엑셀로 열기", self.open_excel), ("작업 기록 보기", lambda: self.open_dir(core.LOG_DIR)), None,
+                          ("목록(엑셀)만 다시 만들기", lambda: self.run(steps.build_excel)),
+                          ("정보·댓글만 넣기", lambda: self.run(steps.fill_all)), None,
+                          ("업데이트 확인", self.update), ("청소", self.clean_window)):
+            menu.add_separator() if item is None else menu.add_command(label=item[0], command=item[1])
+        more["menu"] = menu
+        more.pack(side="right", padx=2)
+        for text, cmd in (("안내", self.open_help), ("⚙ 설정", self.open_settings)):
             ttk.Button(top, text=text, command=cmd).pack(side="right", padx=2)
 
         body = ttk.PanedWindow(root, orient="horizontal")
@@ -83,18 +93,14 @@ class App:
 
         # 왼쪽: 단계 카드 (다음 할 단계를 노랗게)
         self.cards, self.buttons = {}, {}
-        auto = ttk.Button(left, text="▶ 한 번에 진행  (1 → 2 → 고정 탭)", command=self.auto_run)
-        auto.pack(fill="x", ipady=6, pady=(0, 4))
         for key, title, label, cmd in (
-                ("0", "새 묶음 폴더", "폴더 만들기", self.make_batch),
-                ("1", "엑셀(목록) 만들기", "실행", lambda: self.run(steps.build_excel)),
-                ("제목", "제목 확인", "엑셀로 열기", self.open_excel),
-                ("2", "정보·댓글 넣기", "실행", lambda: self.run(steps.fill_all)),
+                ("1", "영상 준비", "폴더 만들기", self.make_batch),
+                ("2", "자동 처리", "▶ 시작", self.auto_run),
                 ("3", "댓글 고정", "탭 열기", self.pin_window),
                 ("4", "예약 걸기", "실행", lambda: self.run(steps.schedule_all))):
             card = tk.Frame(left, bg=COLORS["card"], highlightthickness=1, highlightbackground=COLORS["edge"], padx=10, pady=8)
             card.pack(fill="x", pady=3)
-            badge = tk.Label(card, text="✎" if key == "제목" else key, width=2, font=(FONT, 13, "bold"),
+            badge = tk.Label(card, text=key, width=2, font=(FONT, 13, "bold"),
                              bg=COLORS["card"], fg=COLORS["muted"])
             badge.grid(row=0, column=0, rowspan=2, sticky="n", padx=(0, 8))
             name = tk.Label(card, text=title, font=(FONT, 11, "bold"), bg=COLORS["card"], anchor="w")
@@ -107,7 +113,7 @@ class App:
             card.columnconfigure(1, weight=1)
             self.cards[key] = (card, badge, name, info)
             self.buttons[key] = button
-        self.step_buttons = [auto, *self.buttons.values()]
+        self.step_buttons = list(self.buttons.values())
 
         # 오른쪽: 영상 목록
         head = ttk.Frame(right)
@@ -226,7 +232,7 @@ class App:
     def run(self, fn, label=None):
         if self.busy:
             return messagebox.showinfo("잠시만요", "이전 작업이 아직 진행 중입니다.")
-        names = {"build_excel": "1. 엑셀 만들기", "fill_all": "2. 정보·댓글 넣기", "schedule_all": "4. 예약 걸기"}
+        names = {"build_excel": "목록 만들기", "fill_all": "정보·댓글 넣기", "schedule_all": "4. 예약 걸기"}
         self.set_busy(label or names.get(fn.__name__, "작업"))
 
         def work():
@@ -253,7 +259,7 @@ class App:
         def work(app):
             if self.steps.auto_all(app):
                 app.later(app.pin_window)
-        self.run(work, "한 번에 진행")
+        self.run(work, "2. 자동 처리")
 
     def refresh_status(self):
         try:
@@ -318,12 +324,12 @@ class App:
         menu.add_command(label="파일 있는 폴더 열기", command=lambda: self.open_dir((core.VIDEO_DIR / r["파일"]).parent))
         menu.add_separator()
         no_thumb = r["썸네일"] == "없음"
-        menu.add_command(label="썸네일 다시 찾기 (1단계)" if no_thumb else "썸네일 없이 올리기",
+        menu.add_command(label="썸네일 다시 찾기" if no_thumb else "썸네일 없이 올리기",
                          state="normal" if r["상태"] == "" else "disabled",
                          command=lambda: self.change_row(index, {"썸네일": "" if no_thumb else "없음"}))
         # 정보완료(댓글 전)·대기 중 오류만 처음부터: 원본 틀 백업에서 다시 합치므로 제목이 두 번 안 들어감
         can_redo = r["상태"] == "정보완료" or (r["상태"] == "" and r["오류"])
-        menu.add_command(label="2단계 처음부터 다시 하기", state="normal" if can_redo else "disabled",
+        menu.add_command(label="정보 넣기를 처음부터 다시", state="normal" if can_redo else "disabled",
                          command=lambda: self.change_row(index, {"상태": "", "오류": ""}))
         menu.tk_popup(event.x_root, event.y_root)
 
@@ -344,14 +350,14 @@ class App:
         import yt
         cfg, todo = core.load_config(), []
         if not yt.secret_file().exists():
-            todo.append("① '안내' → 구글 연동 안내대로 열쇠 파일(client_secret_….json)을 _프로그램 폴더에 넣기")
+            todo.append("• '안내' → 구글 연동 안내대로 열쇠 파일(client_secret_….json)을 _프로그램 폴더에 넣기")
         if not cfg["channels"]:
-            todo.append("② '설정' → 채널 추가 → 브라우저에서 그 채널로 로그인 (이름·공개 시간은 자동으로 채워짐)")
+            todo.append("• '설정' → 채널 추가 → 브라우저에서 그 채널로 로그인 (이름·공개 시간은 자동으로 채워짐)")
         missing = [ch["name"] for ch in cfg["channels"] if not ch["channel_id"]]
         if missing:
-            todo.append(f"③ 로그인이 필요한 채널: {', '.join(missing)} ('설정'에서 채널 선택 → 로그인)")
+            todo.append(f"• 로그인이 필요한 채널: {', '.join(missing)} ('설정'에서 채널 선택 → 로그인)")
         self.log("처음 준비할 것:\n  " + "\n  ".join(todo) if todo else
-                 "순서: 0 → 영상 넣고 Studio에 업로드 → '▶ 한 번에 진행' → 댓글 고정 → 4. 예약 걸기")
+                 "순서: 1. 영상 준비 → 2. 자동 처리 → 3. 댓글 고정 → 4. 예약 걸기 (노란 카드가 지금 할 차례)")
 
     def close(self):
         if self.busy and not messagebox.askyesno("닫기", "작업이 진행 중입니다. 정말 닫을까요?\n"
@@ -371,8 +377,8 @@ class App:
 
     def open_excel(self):
         if not core.EXCEL.exists():
-            return messagebox.showinfo("엑셀", "아직 엑셀이 없습니다. 1번을 먼저 눌러주세요.")
-        self.log("엑셀: 노란 칸만 고치고 저장한 뒤 꼭 닫아주세요 (열려 있으면 2·4단계가 저장하지 못합니다).")
+            return messagebox.showinfo("엑셀", "아직 엑셀이 없습니다. '2. 자동 처리'를 먼저 눌러주세요.")
+        self.log("엑셀: 노란 칸만 고치고 저장한 뒤 꼭 닫아주세요 (열려 있으면 작업 결과를 저장하지 못합니다).")
         open_path(core.EXCEL)
 
     def open_dir(self, path):
@@ -475,7 +481,7 @@ class App:
         cfg = core.load_config()
         targets = self.steps.pin_targets(core.read_rows(), cfg)
         if not targets:
-            return messagebox.showinfo("고정", "고정할 영상이 없습니다. 2번을 먼저 진행해주세요.")
+            return messagebox.showinfo("고정", "고정할 영상이 없습니다. '2. 자동 처리'를 먼저 해주세요.")
         titles = {ch["name"]: ch["channel_title"] for ch in cfg["channels"]}
         win = tk.Toplevel(self.root)
         win.title("고정 탭 열기")
@@ -491,6 +497,8 @@ class App:
                 b.state(["disabled"])
             b.config(command=click)
             b.pack(fill="x", padx=10, pady=2)
+            if len(targets) == 1:
+                click()  # 채널이 하나면 바로 연다 (여러 채널은 브라우저 프로필을 바꿔 가며 하나씩)
         ttk.Button(win, text="고정을 다 했으면 → 4. 예약 걸기", command=lambda: (win.destroy(), self.run(
             self.steps.schedule_all))).pack(fill="x", padx=10, pady=10)
 
@@ -600,7 +608,7 @@ class Editor:
         if self.no_thumb.get():
             changes["썸네일"] = "없음"
         elif self.row["썸네일"] == "없음":
-            changes["썸네일"] = ""  # 다시 찾도록 (1단계를 다시 누르면 채워짐)
+            changes["썸네일"] = ""  # 다시 찾도록 ('2. 자동 처리'를 다시 누르면 채워짐)
         if all(self.row.get(k) == v for k, v in changes.items()):
             return True
         try:
@@ -630,25 +638,21 @@ class Editor:
 
 
 # 설정 칸: (키, 이름, 종류) — 종류가 목록이면 고르는 칸
-FIELDS = [
+FIELDS = [  # 늘 보이는 칸
     ("name", "채널 이름", "entry"),
-    ("folder", "영상 폴더 이름 (묶음 폴더 안)", "entry"),
+    ("slots", "공개 요일·시간 (예: 월 12:15, 수 12:15)", "entry"),
     ("ypp", "수익 창출(YPP) 채널", "check"),
     ("members", "회원(멤버십) 기능 사용", "check"),
-    ("slots", "공개 요일·시간 (예: 월 12:15, 수 12:15)", "entry"),
+    ("playlist", "재생목록 (비우면 안 넣음, 여러 개는 쉼표로)", "entry"),
+]
+ADVANCED = [  # '고급 설정'을 눌러야 보이는 칸 (보통 그대로)
+    ("folder", "영상 폴더 이름 (보통 채널 이름과 같음)", "entry"),
     ("title_mode", "제목 넣는 자리", core.MODES),
     ("title_marker", "제목 기준 글자", "entry"),
     ("desc_mode", "설명 넣는 자리", core.MODES),
     ("desc_marker", "설명 기준 글자", "entry"),
-    ("playlist", "재생목록 (주소나 ID, 여러 개는 쉼표로)", "entry"),
-    ("category", "카테고리", [core.KEEP, *core.CATEGORIES]),
-    ("language", "언어", [core.KEEP, *core.LANGUAGES]),
-    ("synthetic", "AI 변경·합성 콘텐츠", [core.KEEP, "예", "아니요"]),
-    ("kids", "아동용", [core.KEEP, "예", "아니요"]),
-    ("embeddable", "퍼가기", [core.KEEP, "허용", "허용 안 함"]),
-    ("license", "라이선스", [core.KEEP, "표준 YouTube 라이선스", "크리에이티브 커먼즈"]),
+    ("synthetic", "AI 변경·합성 콘텐츠 표시", [core.KEEP, "예", "아니요"]),
 ]
-COPY_SKIP = {"key", "name", "folder", "channel_id", "channel_title"}  # 채널 복제 때 새로 정하는 칸
 
 
 class Settings:
@@ -662,8 +666,7 @@ class Settings:
         self.listbox = tk.Listbox(left, width=26, exportselection=False, font=(FONT, 10))
         self.listbox.pack(fill="y", expand=True)
         self.listbox.bind("<<ListboxSelect>>", lambda e: self.select())
-        for text, cmd in (("채널 추가", self.add), ("이 채널 복제", self.duplicate), ("채널 삭제", self.remove),
-                          ("로그인", self.login)):
+        for text, cmd in (("채널 추가", self.add), ("채널 삭제", self.remove), ("로그인", self.login)):
             ttk.Button(left, text=text, command=cmd).pack(fill="x", pady=2)
 
         form = ttk.Frame(win, padding=8)
@@ -671,38 +674,47 @@ class Settings:
         self.login_label = ttk.Label(form, foreground="#555")
         self.login_label.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
         self.vars = {}
-        for i, (key, label, kind) in enumerate(FIELDS, 1):
-            ttk.Label(form, text=label).grid(row=i, column=0, sticky="w", pady=1, padx=(0, 8))
-            if kind == "check":
-                var = tk.BooleanVar()
-                ttk.Checkbutton(form, variable=var).grid(row=i, column=1, sticky="w")
-            else:
-                var = tk.StringVar()
-                widget = ttk.Entry(form, textvariable=var, width=34) if kind == "entry" else \
-                    ttk.Combobox(form, textvariable=var, values=kind, state="readonly", width=32)
-                widget.grid(row=i, column=1, sticky="w")
-            var.trace_add("write", lambda *a: setattr(self, "saved", False))
-            self.vars[key] = var
 
+        def field(parent, row, key, label, kind):
+            ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2, padx=(0, 8))
+            var = tk.BooleanVar() if kind == "check" else tk.StringVar()
+            widget = (ttk.Checkbutton(parent, variable=var) if kind == "check" else
+                      ttk.Entry(parent, textvariable=var, width=40) if kind == "entry" else
+                      ttk.Combobox(parent, textvariable=var, values=kind, state="readonly", width=38))
+            widget.grid(row=row, column=1, sticky="w")
+            var.trace_add("write", lambda *a: setattr(self, "saved", False))
+            return var
+
+        for i, (key, label, kind) in enumerate(FIELDS, 1):
+            self.vars[key] = field(form, i, key, label, kind)
         n = len(FIELDS) + 1
-        ttk.Label(form, foreground="#555", justify="left", text=(
-            "※ '채널 추가' → 로그인하면 이름·폴더·공개 요일·시간은 YouTube에서 자동으로 채워집니다.\n"
-            "※ 나머지는 그대로 두면 됩니다.\n"
-            "※ 제목: '기준 글자 뒤' + ']' → Studio 제목 틀의 ] 바로 뒤에 들어감\n"
-            "    예) [숨겨진 동양사] ＜엑셀 제목＞ l 역사 인물 l 고전 | 수면오디오북\n"
-            "※ '건들지 않음' = Studio 업로드 기본 설정 그대로 둠")).grid(
+        ttk.Label(form, foreground="#555", text="※ '채널 추가'를 누르고 브라우저에서 채널을 고르면 이름·공개 시간은 자동으로 채워집니다.").grid(
             row=n, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Separator(form).grid(row=n + 1, column=0, columnspan=2, sticky="ew", pady=8)
+
+        adv = ttk.Frame(form)
+        toggle = ttk.Button(form, text="고급 설정 ▸ (보통 안 건드려도 됨)")
+        toggle.config(command=lambda: (adv.grid_remove(), toggle.config(text="고급 설정 ▸ (보통 안 건드려도 됨)"))
+                      if adv.winfo_ismapped() else (adv.grid(), toggle.config(text="고급 설정 ▾")))
+        toggle.grid(row=n + 1, column=0, columnspan=2, sticky="w", pady=(10, 4))
+        adv.grid(row=n + 2, column=0, columnspan=2, sticky="w")
+        for i, (key, label, kind) in enumerate(ADVANCED):
+            self.vars[key] = field(adv, i, key, label, kind)
         self.max_fails = tk.StringVar(value=str(self.cfg["max_fails"]))
         self.mode = tk.StringVar(value=self.cfg["mode"])
         for var in (self.max_fails, self.mode):
             var.trace_add("write", lambda *a: setattr(self, "saved", False))
-        ttk.Label(form, text="연속 실패 몇 번이면 멈춤").grid(row=n + 2, column=0, sticky="w")
-        ttk.Spinbox(form, from_=1, to=20, textvariable=self.max_fails, width=5).grid(row=n + 2, column=1, sticky="w")
-        ttk.Label(form, text="진행 방식").grid(row=n + 3, column=0, sticky="w")
-        ttk.Combobox(form, textvariable=self.mode, values=["한 번에 전체", "영상마다 확인"],
-                     state="readonly", width=32).grid(row=n + 3, column=1, sticky="w")
-        ttk.Button(form, text="저장", command=self.save).grid(row=n + 4, column=1, sticky="e", pady=10)
+        m = len(ADVANCED)
+        ttk.Label(adv, text="연속 실패 몇 번이면 멈춤").grid(row=m, column=0, sticky="w", pady=2)
+        ttk.Spinbox(adv, from_=1, to=20, textvariable=self.max_fails, width=5).grid(row=m, column=1, sticky="w")
+        ttk.Label(adv, text="진행 방식").grid(row=m + 1, column=0, sticky="w", pady=2)
+        ttk.Combobox(adv, textvariable=self.mode, values=["한 번에 전체", "영상마다 확인"],
+                     state="readonly", width=38).grid(row=m + 1, column=1, sticky="w")
+        ttk.Label(adv, foreground="#555", justify="left", text=(
+            "※ 제목: '기준 글자 뒤' + ']' → Studio 제목 틀의 ] 바로 뒤에 들어감\n"
+            "    예) [숨겨진 동양사] ＜제목＞ l 역사 인물 l 고전 | 수면오디오북\n"
+            "※ '건들지 않음' = Studio 업로드 기본 설정 그대로")).grid(row=m + 2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        adv.grid_remove()
+        ttk.Button(form, text="저장", command=self.save).grid(row=n + 3, column=1, sticky="e", pady=10)
         self.refresh(0)
         self.saved = True
 
@@ -741,23 +753,13 @@ class Settings:
         self.login_label.config(text=f"로그인됨: YouTube 채널 '{ch['channel_title']}'" if ch["channel_id"]
                                 else "로그인 안 됨 — 왼쪽 '로그인'을 눌러주세요")
 
-    def add(self, base=None):
+    def add(self):
         self.commit()
-        n = len(self.cfg["channels"]) + 1
-        ch = core.new_channel(f"채널{n}")
-        if base:
-            ch |= {k: v for k, v in base.items() if k not in COPY_SKIP} | {"name": f"{base['name']} 복사",
-                                                                           "folder": f"{base['folder']} 복사"}
+        ch = core.new_channel(f"채널{len(self.cfg['channels']) + 1}")
         self.cfg["channels"].append(ch)
         self.saved = False
         self.refresh(len(self.cfg["channels"]) - 1)
         self.login()  # 이름·공개 시간은 로그인한 채널에서 알아낸다
-
-    def duplicate(self):
-        if self.cur is None:
-            return
-        self.commit()
-        self.add(dict(self.cfg["channels"][self.cur]))
 
     def remove(self):
         if self.cur is None or not messagebox.askyesno("삭제", "이 채널 설정을 지울까요?", parent=self.win):
@@ -806,7 +808,7 @@ class Settings:
 
     def fill_from_youtube(self, ch, slots):
         """처음 로그인한 채널: 이름·폴더·공개 시간을 채우고, 새로 추가한 채널이면 두 가지만 물어본 뒤 저장."""
-        v, placeholder = self.vars, r"채널\d+|.* 복사"
+        v, placeholder = self.vars, r"채널\d+"
         name = re.sub(r'[\\/:*?"<>|]', "", ch["channel_title"]).strip()
         is_new = bool(re.fullmatch(placeholder, v["name"].get()))
         if name and is_new and name not in (c["name"] for c in self.cfg["channels"]):

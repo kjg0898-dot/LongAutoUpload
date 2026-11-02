@@ -292,10 +292,10 @@ def test_status_summary_and_kids():
         cfg["channels"][0]["kids"] = "예"
         core.save_config(cfg)
         steps.build_excel(ui)
-        assert "대기 3" in steps.status_summary(core.read_rows(), cfg) and "2. 정보" in steps.status_summary(core.read_rows(), cfg)
+        assert "대기 3" in steps.status_summary(core.read_rows(), cfg) and "2. 자동 처리" in steps.status_summary(core.read_rows(), cfg)
         steps.fill_all(ui)
         assert fake.comments == [] and any("아동용" in m for m in ui.logs)
-        assert "3. 고정" in steps.status_summary(core.read_rows(), cfg)
+        assert "3. 댓글 고정" in steps.status_summary(core.read_rows(), cfg)
 
 
 def test_excel_open_and_off_slot_time():
@@ -384,14 +384,14 @@ def test_schedule_verify_waits_for_delayed_read():
 
 def test_card_status():
     row = lambda state, err="": dict.fromkeys(core.COLUMNS, "") | {"상태": state, "오류": err}  # noqa: E731
-    assert steps.card_status([])[1] == "0" and steps.card_status([], has_videos=True)[1] == "1"
+    assert steps.card_status([])[1] == "1" and steps.card_status([], has_videos=True)[1] == "2"
     text, nxt = steps.card_status([row(""), row("", "썸네일 없음"), row("정보완료")])
-    assert nxt == "제목" and text["1"] == "영상 3개 · 오류 1" and text["2"] == "남은 3개"
+    assert nxt == "2" and text["1"] == "이번 묶음 영상 3개" and text["2"] == "남은 3개 · 오류 1", text
     assert steps.card_status([row("정보완료")])[1] == "2"
     assert steps.card_status([row("댓글완료"), row("예약완료")])[1] == "3"
     text, nxt = steps.card_status([row("예약완료"), row(core.MEMBER_TODO)])
     assert nxt == "4" and "회원 직접설정 1" in text["4"]
-    assert steps.card_status([row("예약완료")])[1] == "0"
+    assert steps.card_status([row("예약완료")])[1] == "1"
 
 
 def test_auto_all_and_no_title_template():

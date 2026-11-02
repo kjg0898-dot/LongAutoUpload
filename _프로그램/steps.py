@@ -137,45 +137,42 @@ def status_summary(rows, cfg):
         lines.append(f"{ch['name']}: " + " · ".join(parts) + (f" · 오류 {errors}" if errors else ""))
     states = {r["상태"] for r in rows}
     if "" in states:
-        nxt = "목록에서 영상 더블클릭해 제목 확인 → 2. 정보·댓글 넣기"
+        nxt = "2. 자동 처리"
     elif "정보완료" in states:
-        nxt = "2. 정보·댓글 넣기 (남은 댓글)"
+        nxt = "2. 자동 처리 (남은 댓글)"
     elif "댓글완료" in states:
-        nxt = "3. 고정 탭 열기 → 고정 → 4. 예약 걸기"
+        nxt = "3. 댓글 고정 → 4. 예약 걸기"
     elif core.MEMBER_TODO in states:
         nxt = "Studio에서 회원 전용 + 공개 예약 직접 설정 (엑셀 상태 '회원 설정 필요'인 영상) → 끝나면 다음 묶음"
     else:
-        nxt = "0. 새 묶음 폴더에 파일 넣고 Studio에 업로드 → 1. 엑셀 만들기"
+        nxt = "1. 영상 준비 (폴더에 넣고 Studio에 업로드) → 2. 자동 처리"
     return ("\n".join(lines) or "진행 중인 영상 없음") + f"\n▶ 다음 할 일: {nxt}"
 
 
 def card_status(rows, has_videos=False):
-    """화면 왼쪽 단계 카드: ({단계: 설명}, 다음 할 단계). 단계 = 0, 1, 제목, 2, 3, 4."""
+    """화면 왼쪽 단계 카드: ({카드: 설명}, 다음 할 카드). 카드 = 1 영상 준비, 2 자동 처리, 3 댓글 고정, 4 예약 걸기."""
     c = Counter(r["상태"] for r in rows)
     done = sum(c[s] for s in core.DONE_STATES)
     errors = sum(1 for r in rows if r["오류"])
-    member = c[core.MEMBER_TODO]
+    member, left = c[core.MEMBER_TODO], c[""] + c["정보완료"]
     text = {
-        "0": "채널 폴더에 영상·SEO·썸네일을 넣고 Studio에 업로드" if not rows else "이번 묶음 준비됨",
-        "1": f"영상 {len(rows)}개" + (f" · 오류 {errors}" if errors else "") if rows else "SEO·썸네일을 짝지어 목록 만들기",
-        "제목": f"{c['']}개 — 목록에서 더블클릭해 확인·수정" if c[""] else "확인할 제목 없음",
-        "2": f"남은 {c[''] + c['정보완료']}개" if c[""] + c["정보완료"] else ("완료" if rows else "제목·설명·썸네일·댓글 넣기"),
+        "1": f"이번 묶음 영상 {len(rows)}개" if rows else "폴더에 영상·SEO·썸네일 넣고 Studio에 업로드",
+        "2": (f"남은 {left}개" if left else "완료" if rows else "목록 → 제목 확인 → 제목·설명·썸네일·댓글")
+             + (f" · 오류 {errors}" if errors else ""),
         "3": f"고정할 영상 {c['댓글완료']}개" if c["댓글완료"] else "탭을 열어 댓글 고정 (직접)",
         "4": (f"예약할 영상 {c['댓글완료']}개" if c["댓글완료"] else "예약 + 완료 폴더로 이동")
              + (f" · 완료 {done}" if done else "") + (f" · 회원 직접설정 {member}" if member else ""),
     }
-    if c[""]:
-        nxt = "제목"
-    elif c["정보완료"]:
+    if left:
         nxt = "2"
     elif c["댓글완료"]:
         nxt = "3"
-    elif rows and not member:
-        nxt = "0"
     elif member:
         nxt = "4"
+    elif rows:
+        nxt = "1"
     else:
-        nxt = "1" if has_videos else "0"
+        nxt = "2" if has_videos else "1"
     return text, nxt
 
 
@@ -204,7 +201,7 @@ def build_excel(ui):
         problems += [f"{m} (예약일시는 4단계에서 채움)" for m in skipped]
     if problems:
         ui.alert("확인이 필요한 것이 있습니다:\n" + "\n".join(f"- {p}" for p in problems))
-    ui.log("오른쪽 목록에서 영상을 더블클릭해 제목·예약일시 확인 → 저장하고 다음 (엑셀로 고쳐도 됩니다) → 다 되면 2단계를 누르세요.")
+    ui.log("제목·예약일시를 바꾸려면 오른쪽 목록에서 영상을 더블클릭하세요.")
 
 
 # ---------- 2. 정보·댓글 넣기 ----------
@@ -249,11 +246,11 @@ def _compose(ch, r, original):
     if not r["제목"].strip():
         raise ValueError("엑셀의 제목 칸이 비어 있습니다.")
     if not r["설명"].strip():
-        raise ValueError("설명이 비어 있습니다 (SEO 메모장을 못 찾음). 1단계를 다시 누르거나 엑셀 설명 칸을 채워주세요.")
+        raise ValueError("설명이 비어 있습니다 (SEO 메모장을 못 찾음). '2. 자동 처리'를 다시 누르세요.")
     if r["예약일시"]:
         core.parse_dt(r["예약일시"], core.parse_slots(ch["slots"], ch["name"]))  # 형식 오류를 미리 알림
     if not r["썸네일"]:
-        raise ValueError("썸네일을 못 찾았습니다. 썸네일을 채널 폴더에 넣고 1단계를 다시 누르거나, 없이 올리려면 썸네일 칸에 '없음'.")
+        raise ValueError("썸네일을 못 찾았습니다. 썸네일을 채널 폴더에 넣고 '2. 자동 처리'를 다시 누르거나, 목록에서 오른쪽 클릭 → '썸네일 없이 올리기'.")
     if r["썸네일"] != "없음":
         thumb = core.VIDEO_DIR / r["썸네일"]
         if not thumb.exists():
@@ -270,8 +267,8 @@ def fill_all(ui):
     todo_all = [r for r in rows if r["상태"] in ("", "정보완료")]
     if not todo_all:
         if any(r["상태"] == "댓글완료" for r in rows):
-            return ui.log("정보·댓글은 모두 넣었습니다 → 3. 고정 탭 열기")
-        return ui.log("2단계에서 할 영상이 없습니다. 1단계(엑셀 만들기)를 먼저 해주세요.")
+            return ui.log("정보·댓글은 모두 넣었습니다 → 3. 댓글 고정")
+        return ui.log("넣을 영상이 없습니다. 영상을 폴더에 넣고 Studio에 올린 뒤 '2. 자동 처리'를 눌러주세요.")
     extra = {ch["name"]: 50 * max(len(core.playlist_ids(ch["playlist"])) - 1, 0) for ch in cfg["channels"]}  # 재생목록 하나는 COST_FILL에 포함
     units = sum(yt.COST_FILL + extra.get(r["채널"], 0) if r["상태"] == "" else 50 for r in todo_all)
     days = math.ceil(units / (yt.DAILY_QUOTA * 0.9))
@@ -344,7 +341,7 @@ def open_tabs(urls):
         webbrowser.open_new_tab(u)
 
 
-# ---------- 한 번에 진행 (1 → 2, 그다음 고정 창) ----------
+# ---------- 2. 자동 처리 (목록 → 제목 확인 → 정보·댓글, 그다음 고정 창) ----------
 def auto_all(ui):
     build_excel(ui)
     rows = core.read_rows()
@@ -352,7 +349,7 @@ def auto_all(ui):
     if new and not ui.ask(f"새 영상 {len(new)}개의 제목은 SEO 추천 1순위로 넣습니다. 이대로 진행할까요?\n\n"
                           + "\n".join(f"- {r['제목']}" for r in new[:10]) + ("\n…" if len(new) > 10 else "")
                           + "\n\n('아니요' → 목록에서 더블클릭해 고친 뒤 다시 누르세요)"):
-        return ui.log("제목을 고친 뒤 '한 번에 진행'을 다시 누르세요.")
+        return ui.log("제목을 고친 뒤 '2. 자동 처리'를 다시 누르세요.")
     fill_all(ui)
     return bool(pin_targets(core.read_rows(), core.load_config()))
 
@@ -361,7 +358,7 @@ def auto_all(ui):
 def schedule_all(ui):
     cfg, rows = core.load_config(), _load(ui)
     if not any(r["상태"] == "댓글완료" for r in rows):
-        return ui.log("예약할 영상이 없습니다. 2단계(정보·댓글 넣기)와 3단계(고정)를 먼저 해주세요.")
+        return ui.log("예약할 영상이 없습니다. '2. 자동 처리'와 '3. 댓글 고정'을 먼저 해주세요.")
     if not ui.ask("고정(수창 채널은 광고 설문까지)을 모두 마치셨나요?\n예를 누르면 예약을 겁니다."):
         return
     failed, skipped, manual = [], [], []

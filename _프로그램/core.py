@@ -529,7 +529,7 @@ def read_rows():
     head = [str(c.value).strip() if c.value is not None else "" for c in ws[1]]
     if "파일" not in head:
         raise ValueError(f"엑셀 '{SHEET}' 시트의 첫 줄(제목 줄)이 바뀌었습니다. "
-                         f"_프로그램/백업/엑셀 의 사본을 쓰거나, 엑셀을 지우고 1단계를 다시 눌러주세요.")
+                         f"_프로그램/백업/엑셀 의 사본을 쓰거나, 엑셀을 지우고 '2. 자동 처리'를 다시 눌러주세요.")
     rows = []
     for values in ws.iter_rows(min_row=2, values_only=True):
         r = {col: _cell(values[head.index(col)]) if col in head and head.index(col) < len(values) else ""
@@ -642,7 +642,7 @@ def move_done(row):
 # (이름, 기본으로 체크할지, 위험한지) — 위험한 것은 지우면 다시 준비해야 하거나 영상 파일이 사라진다
 CLEAN_GROUPS = [
     ("시험 결과·오류·임시 파일", True, False),
-    ("백업 (엑셀 사본, 2단계 전 원래 제목·설명)", True, False),
+    ("백업 (엑셀 사본, 바꾸기 전 원래 제목·설명)", True, False),
     ("작업 기록", True, False),
     ("엑셀 (업로드목록)", False, False),
     ("완료 폴더 안 파일 (끝난 영상)", False, True),

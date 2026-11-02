@@ -337,15 +337,21 @@ def _match_thumb(video, entry, images, videos):
     return _find_pair(video, images, videos), False
 
 
-def scan_channel(folder):
-    """[(영상, 메모장 항목 또는 None, 썸네일 또는 None)] — 한 묶음의 한 채널 폴더 안에서, 파일 이름 순서."""
+def scan_channel(folder, drafts=()):
+    """[(영상, 메모장 항목 또는 None, 썸네일 또는 None)] — 한 묶음의 한 채널 폴더 안에서, 파일 이름 순서.
+    drafts: Studio 초안의 원본 파일 이름들. 폴더에 영상 파일이 없어도 메모장 순번과 확실히 맞으면 영상으로 본다."""
     files = [p for p in Path(folder).rglob("*") if p.is_file()]
-    videos = sorted((p for p in files if p.suffix.lower() in VIDEO_EXT), key=natural_key)
+    local = [p for p in files if p.suffix.lower() in VIDEO_EXT]
+    names = {p.name.lower() for p in local}
+    virtual = [Path(folder) / n for n in dict.fromkeys(drafts) if n.lower() not in names]
+    videos = sorted(local + virtual, key=natural_key)
     entries = load_entries(p for p in files if p.suffix.lower() == ".txt")
     images = [p for p in files if p.suffix.lower() in IMAGE_EXT]
     pairs = []
     for v in videos:
         entry, sure_e = _match_entry(v, entries, videos)
+        if v in virtual and not sure_e:
+            continue  # 이 묶음 메모장과 확실히 맞는 초안만 (예전 초안이 끼지 않게)
         thumb, sure_t = _match_thumb(v, entry, images, videos)
         pairs.append([v, (entry, sure_e), (thumb, sure_t)])
     for col in (1, 2):  # 한 파일이 여러 영상에 짝지어지면: 확실한 짝 하나만 남기고, 나머지(또는 확실한 짝이 여럿이면 전부)는 확인 필요
@@ -459,36 +465,45 @@ def rel(p):
     return Path(p).relative_to(VIDEO_DIR).as_posix() if p else ""
 
 
-def build_rows(cfg, old_rows):
+def build_rows(cfg, old_rows, drafts=None, uploaded=None):
     """영상 폴더를 훑어 엑셀 행을 만든다. 사용자가 고친 칸(제목·회원우선·예약일시·영상ID)은 그대로 두고,
-    아직 처리 전인 행은 메모장·썸네일을 다시 찾아 채운다 (파일을 옮기거나 이름을 고친 뒤 다시 눌러도 반영)."""
+    아직 처리 전인 행은 메모장·썸네일을 다시 찾아 채운다 (파일을 옮기거나 이름을 고친 뒤 다시 눌러도 반영).
+    drafts: {채널 이름: {원본 파일 이름: 영상ID}} — Studio 초안. 채널의 마지막 묶음에 영상 파일이 없어도 행을 만든다.
+    uploaded: {영상ID: 원본 파일 이름} — 폴더에 파일이 없는 진행 중 행이 정상인지 알아보는 데 쓴다."""
     old = {r["파일"]: r for r in old_rows}
+    taken = {r["영상ID"]: r["파일"] for r in old_rows if r["영상ID"]}  # 다른 행이 이미 쓰는 초안은 빼기
     rows, problems, seen = [], [], set()
-    for ch, folder in ((ch, d) for ch in cfg["channels"] for d in channel_dirs(ch)):
-        batch_rows = []
-        for video, entry, thumb in scan_channel(folder):
-            name = rel(video)
-            seen.add(name)
-            info = entry or {}
-            fresh = {"제목후보": "\n".join(f"{i}. {t}" for i, t in enumerate(info.get("titles", []), 1)),
-                     "설명": info.get("desc", ""), "태그": info.get("tags", ""), "고정댓글": info.get("comment", ""),
-                     "메모장": rel(info.get("src")), "썸네일": rel(thumb)}
-            row = old.get(name) or dict.fromkeys(COLUMNS, "") | {"채널": ch["name"], "파일": name}
-            if row["상태"] == "":
-                keep_thumb = row["썸네일"] == "없음"  # 썸네일 없이 올리기로 한 영상
-                row |= fresh | ({"썸네일": "없음"} if keep_thumb else {})
-                row["제목"] = row["제목"] or info.get("title", "")
-                if not entry:
-                    problems.append(f"{name}: 메모장(SEO) 내용을 못 찾음")
-                if not row["썸네일"]:
-                    problems.append(f"{name}: 썸네일을 못 찾음 (없이 올리려면 엑셀 썸네일 칸에 '없음')")
-                elif thumb and thumb.stat().st_size > THUMB_MAX:
-                    problems.append(f"{name}: 썸네일이 2MB를 넘음 ({thumb.name})")
-            rows.append(row)
-            batch_rows.append(row)
-        pending = [r for r in batch_rows if r["상태"] == ""]
-        if ch["members"] and pending and not any(is_member(r["회원우선"]) for r in batch_rows):
-            pending[-1]["회원우선"] = "O"  # 기본 규칙: 이 묶음에서 아직 처리 전인 마지막 영상
+    for ch in cfg["channels"]:
+        dirs = channel_dirs(ch)
+        mine = {n: v for n, v in (drafts or {}).get(ch["name"], {}).items()
+                if dirs and taken.get(v, rel(dirs[-1] / n)) == rel(dirs[-1] / n)}
+        for folder in dirs:
+            batch_rows = []
+            for video, entry, thumb in scan_channel(folder, mine if folder == dirs[-1] else ()):
+                name = rel(video)
+                seen.add(name)
+                info = entry or {}
+                fresh = {"제목후보": "\n".join(f"{i}. {t}" for i, t in enumerate(info.get("titles", []), 1)),
+                         "설명": info.get("desc", ""), "태그": info.get("tags", ""), "고정댓글": info.get("comment", ""),
+                         "메모장": rel(info.get("src")), "썸네일": rel(thumb)}
+                row = old.get(name) or dict.fromkeys(COLUMNS, "") | {"채널": ch["name"], "파일": name}
+                if not row["영상ID"] and not video.exists():
+                    row["영상ID"] = mine[video.name]  # 폴더에 없는 영상 = Studio 초안
+                if row["상태"] == "":
+                    keep_thumb = row["썸네일"] == "없음"  # 썸네일 없이 올리기로 한 영상
+                    row |= fresh | ({"썸네일": "없음"} if keep_thumb else {})
+                    row["제목"] = row["제목"] or info.get("title", "")
+                    if not entry:
+                        problems.append(f"{name}: 메모장(SEO) 내용을 못 찾음")
+                    if not row["썸네일"]:
+                        problems.append(f"{name}: 썸네일을 못 찾음 (없이 올리려면 엑셀 썸네일 칸에 '없음')")
+                    elif thumb and thumb.stat().st_size > THUMB_MAX:
+                        problems.append(f"{name}: 썸네일이 2MB를 넘음 ({thumb.name})")
+                rows.append(row)
+                batch_rows.append(row)
+            pending = [r for r in batch_rows if r["상태"] == ""]
+            if ch["members"] and pending and not any(is_member(r["회원우선"]) for r in batch_rows):
+                pending[-1]["회원우선"] = "O"  # 기본 규칙: 이 묶음에서 아직 처리 전인 마지막 영상
     if VIDEO_DIR.exists():  # 채널 폴더가 아니라 묶음 폴더에 바로 둔 메모장·썸네일은 어느 채널 것인지 모른다
         loose = [f for b in VIDEO_DIR.iterdir() if b.is_dir() for f in b.iterdir()
                  if f.is_file() and f.suffix.lower() in IMAGE_EXT | {".txt"}]
@@ -496,6 +511,8 @@ def build_rows(cfg, old_rows):
     for r in old_rows:  # 파일을 옮기거나 이름을 바꿨어도 진행 중인 행은 남긴다 (영상ID를 잃으면 댓글이 두 번 달림)
         if r["파일"] not in seen and r["상태"] and r["상태"] not in DONE_STATES:
             rows.append(r)
+            if (uploaded or {}).get(r["영상ID"], "").lower() == Path(r["파일"]).name.lower():
+                continue  # 영상 파일 없이 Studio 초안으로 만든 행: 정상
             problems.append(f"{r['파일']}: 파일이 안 보이지만 진행 중이라 목록에 남겨둠 (영상ID {r['영상ID']})")
     names = {ch["name"] for ch in cfg["channels"]}
     problems += [f"{r['파일']}: 설정에 없는 채널 '{r['채널']}'" for r in rows if r["채널"] not in names]

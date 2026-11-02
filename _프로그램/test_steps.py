@@ -427,6 +427,32 @@ def test_relogin_when_expired():
         assert steps._client(ui, core.load_config()["channels"][0], skipped) is None and "만료" in skipped[0]
 
 
+def test_no_video_files_uses_studio_drafts():
+    """폴더에 영상 파일 없이 SEO·썸네일만 넣어도 Studio 초안(원본 파일 이름)으로 1→2→4가 된다."""
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        for n in (1, 2, 3):
+            (core.VIDEO_DIR / "b" / "명언" / f"{n}.mp4").unlink()
+        db = fake.videos_db
+        db["vid0"]["snippet"]["publishedAt"] = "2026-11-01T00:00:00Z"
+        db["old"] = {**db["vid0"], "id": "old", "snippet": {**db["vid0"]["snippet"], "publishedAt": "2026-01-01T00:00:00Z"}}
+        db["vid9"] = {**db["vid1"], "id": "vid9", "fileDetails": {"fileName": "99.mp4"}}  # 메모장에 없는 번호 → 안 씀
+        steps.build_excel(ui)
+        rows = core.read_rows()
+        assert [(r["파일"], r["영상ID"]) for r in rows] == [("b/명언/1.mp4", "vid0"), ("b/명언/2.mp4", "vid1"),
+                                                         ("b/명언/3.mp4", "vid2")], rows  # 같은 이름이면 최근 초안
+        assert all(r["설명"] and r["썸네일"] for r in rows)
+        steps.fill_all(ui)
+        assert [r["상태"] for r in core.read_rows()] == ["댓글완료"] * 3 and "old" not in fake.thumbs
+        ui.alerts.clear()
+        steps.build_excel(ui)  # 진행 중에 다시 눌러도 행이 그대로, 쓸데없는 경고 없음
+        assert [r["상태"] for r in core.read_rows()] == ["댓글완료"] * 3
+        assert not any("파일이 안 보이지만" in a for a in ui.alerts), ui.alerts
+        steps.schedule_all(ui)
+        assert all(r["상태"] in core.DONE_STATES for r in core.read_rows())
+        assert (core.DONE_DIR / "b" / "명언").is_dir() and not (core.VIDEO_DIR / "b" / "명언").exists()
+
+
 def test_publish_times():
     fake = FakeYouTube(["a.mp4", "b.mp4", "c.mp4"])
     fake.videos_db["vid0"]["status"]["publishAt"] = "2026-10-26T03:15:00Z"  # 예약

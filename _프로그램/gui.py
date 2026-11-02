@@ -265,8 +265,7 @@ class App:
         try:
             self.rows, cfg = core.read_rows(), core.load_config()
             text = self.steps.status_summary(self.rows, cfg)
-            has_videos = core.VIDEO_DIR.exists() and any(
-                p.suffix.lower() in core.VIDEO_EXT for p in core.VIDEO_DIR.rglob("*"))
+            has_videos = core.VIDEO_DIR.exists() and any(p.is_file() for p in core.VIDEO_DIR.rglob("*"))  # 메모장만 넣어도 됨
             infos, nxt = self.steps.card_status(self.rows, has_videos)
             names = ["전체 채널"] + [ch["name"] for ch in cfg["channels"]]
         except Exception as e:
@@ -372,7 +371,7 @@ class App:
             return messagebox.showinfo("새 묶음", "설정에서 채널을 먼저 추가해주세요.")
         batch = core.new_batch(cfg)
         self.log(f"새 묶음 폴더를 만들었습니다: 영상/{batch.name}\n"
-                 "채널 폴더마다 영상·SEO 메모장·썸네일을 넣으세요. 폴더 안에서는 아무렇게나 둬도 됩니다.")
+                 "채널 폴더마다 SEO 메모장·썸네일을 넣고, 영상은 Studio에 올리세요 (영상 파일은 폴더에 안 넣어도 됩니다).")
         open_path(batch)
 
     def open_excel(self):

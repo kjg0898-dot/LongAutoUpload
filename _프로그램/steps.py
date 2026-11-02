@@ -145,7 +145,7 @@ def status_summary(rows, cfg):
     elif core.MEMBER_TODO in states:
         nxt = "Studio에서 회원 전용 + 공개 예약 직접 설정 (엑셀 상태 '회원 설정 필요'인 영상) → 끝나면 다음 묶음"
     else:
-        nxt = "1. 영상 준비 (폴더에 넣고 Studio에 업로드) → 2. 자동 처리"
+        nxt = "1. 영상 준비 (폴더에 SEO·썸네일, 영상은 Studio에 업로드) → 2. 자동 처리"
     return ("\n".join(lines) or "진행 중인 영상 없음") + f"\n▶ 다음 할 일: {nxt}"
 
 
@@ -156,7 +156,7 @@ def card_status(rows, has_videos=False):
     errors = sum(1 for r in rows if r["오류"])
     member, left = c[core.MEMBER_TODO], c[""] + c["정보완료"]
     text = {
-        "1": f"이번 묶음 영상 {len(rows)}개" if rows else "폴더에 영상·SEO·썸네일 넣고 Studio에 업로드",
+        "1": f"이번 묶음 영상 {len(rows)}개" if rows else "폴더에 SEO·썸네일 넣고, 영상은 Studio에 업로드",
         "2": (f"남은 {left}개" if left else "완료" if rows else "목록 → 제목 확인 → 제목·설명·썸네일·댓글")
              + (f" · 오류 {errors}" if errors else ""),
         "3": f"고정할 영상 {c['댓글완료']}개" if c["댓글완료"] else "탭을 열어 댓글 고정 (직접)",
@@ -183,18 +183,31 @@ def build_excel(ui):
         return ui.alert("설정에서 채널을 먼저 추가해주세요.")
     old = _load(ui)
     _retry_moves(ui, old)
-    rows, problems = core.build_rows(cfg, old)
-    skipped = []
+    # Studio 초안(원본 파일 이름)을 읽어 둔다: 폴더에 영상 파일이 없어도 되고, 예약일시 계산에도 쓴다
+    recent, skipped, problems = {}, [], []
     for ch in cfg["channels"]:
-        if not any(r["채널"] == ch["name"] and not r["예약일시"] for r in rows):
-            continue
-        client = _client(ui, ch, skipped)
-        if not client:
-            continue
-        try:
-            core.fill_schedule(rows, ch, yt.last_scheduled(yt.recent_videos(client)), _now())
-        except Exception as e:
-            problems.append(f"[{ch['name']}] 예약일시 계산 실패: {yt.error_text(e)}")
+        if core.channel_dirs(ch) and (client := _client(ui, ch, skipped)):
+            try:
+                recent[ch["name"]] = yt.recent_videos(client)
+            except Exception as e:
+                if yt.is_quota(e):
+                    raise Stop(QUOTA_MSG) from None
+                problems.append(f"[{ch['name']}] Studio 영상 목록을 못 읽음: {yt.error_text(e)}")
+    drafts = {}
+    for name, videos in recent.items():
+        mine = drafts[name] = {}
+        for v in sorted(videos, key=lambda v: v["snippet"].get("publishedAt", "")):  # 같은 이름이면 최근 것
+            if yt.is_untouched(v) and yt.file_name(v):
+                mine[yt.file_name(v)] = v["id"]
+    uploaded = {v["id"]: yt.file_name(v) for videos in recent.values() for v in videos}
+    rows, more = core.build_rows(cfg, old, drafts, uploaded)
+    problems += more
+    for ch in cfg["channels"]:
+        if ch["name"] in recent and any(r["채널"] == ch["name"] and not r["예약일시"] for r in rows):
+            try:
+                core.fill_schedule(rows, ch, yt.last_scheduled(recent[ch["name"]]), _now())
+            except Exception as e:
+                problems.append(f"[{ch['name']}] 예약일시 계산 실패: {yt.error_text(e)}")
     _save(ui, rows)
     ui.log(f"엑셀을 만들었습니다: 영상 {len(rows)}개 → {core.EXCEL.name}")
     if skipped:
@@ -268,7 +281,7 @@ def fill_all(ui):
     if not todo_all:
         if any(r["상태"] == "댓글완료" for r in rows):
             return ui.log("정보·댓글은 모두 넣었습니다 → 3. 댓글 고정")
-        return ui.log("넣을 영상이 없습니다. 영상을 폴더에 넣고 Studio에 올린 뒤 '2. 자동 처리'를 눌러주세요.")
+        return ui.log("넣을 영상이 없습니다. 폴더에 SEO 메모장·썸네일을 넣고 영상을 Studio에 올린 뒤 '2. 자동 처리'를 눌러주세요.")
     extra = {ch["name"]: 50 * max(len(core.playlist_ids(ch["playlist"])) - 1, 0) for ch in cfg["channels"]}  # 재생목록 하나는 COST_FILL에 포함
     units = sum(yt.COST_FILL + extra.get(r["채널"], 0) if r["상태"] == "" else 50 for r in todo_all)
     days = math.ceil(units / (yt.DAILY_QUOTA * 0.9))

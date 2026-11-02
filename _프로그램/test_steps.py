@@ -521,11 +521,12 @@ def test_auto_thumbnails_with_claude():
     import thumbs
     from PIL import Image
     calls = []
-    saved = (ai.client, ai.plan, ai.find_photo)
+    saved = (ai.client, ai.plan, ai.find_photo, ai.queries)
     ai.client = lambda key: calls.append(("client", key)) or "CL"
+    ai.queries = lambda cl, title, desc, text: calls.append(("queries", title)) or ["Seoul 1950"]
     ai.plan = lambda cl, base, text, title, desc, sides: calls.append(("plan", text)) or {
-        "side": "right", "accents": ["명언"], "queries": ["Seoul 1950"]}
-    ai.find_photo = lambda cl, queries, text, title, log: calls.append(("photo", queries)) or (
+        "side": "right", "accents": ["명언"], "queries": []}
+    ai.find_photo = lambda cl, queries, text, title, log, skip=(): calls.append(("photo", queries)) or (
         Image.new("RGB", (800, 600), "red"), "File:Seoul.jpg")
     try:
         with tempfile.TemporaryDirectory() as d:
@@ -541,11 +542,15 @@ def test_auto_thumbnails_with_claude():
             steps.make_thumbnails(ui, rows, rows[:1])
             assert ("client", "sk-test") in calls and ("photo", ["Seoul 1950"]) in calls, calls
             note = json.loads((core.VIDEO_DIR / "b" / "명언" / "1_자동썸네일.json").read_text("utf-8"))
-            assert note["plan"]["side"] == "right" and note["photo"] == "File:Seoul.jpg"
+            photo = json.loads((core.VIDEO_DIR / "b" / "명언" / core.PHOTOS / "1.json").read_text("utf-8"))
+            assert note["plan"]["side"] == "right" and photo["credit"] == "File:Seoul.jpg"
+            before = len(calls)
+            steps.make_thumbnails(ui, rows, rows[:1])  # 그대로면 다시 안 만들고 실제 사진도 다시 안 찾음
+            assert len(calls) == before, calls[before:]
             img = Image.open(core.VIDEO_DIR / rows[0]["썸네일"]).convert("RGB")
             assert img.getpixel((180, 200))[0] > 200  # 글자가 오른쪽이면 실제 사진(빨강)은 왼쪽 위
     finally:
-        ai.client, ai.plan, ai.find_photo = saved
+        ai.client, ai.plan, ai.find_photo, ai.queries = saved
 
 
 def test_ai_request_and_commons_filter():
@@ -651,6 +656,66 @@ def test_thumb_test_report():
             assert image.exists() and "✓ 실제 사진: MRE.jpg" in text and "요청 2번" in text and "$0.048" in text, text
     finally:
         ai.client, ai.search_commons, ai.download, core.PROG = saved
+
+
+SEO2 = "".join(f"""[2026-10-21 19:24] 행 {n} | 순번 {n} | 제목: 원본 {n}
+---
+제목 (3안)
+1. 첫째 제목 {n}
+2. 둘째 제목 {n}
+추천 1순위: 1 — 이유
+---
+썸네일 문구 (3안)
+1. 문구 {n} / 둘째 줄
+추천 1순위: 1 — 이유
+---
+설명글 & 해시태그
+설명 {n}
+---
+고정 댓글
+댓글 {n}
+""" for n in (1, 2))
+
+
+def test_prep_flow():
+    """준비 화면: SEO 넣기 → 후보 그림(번호로 나눔) → 고르기·고치기 → 미리보기·최종 썸네일 → 목록에 그대로."""
+    import os
+    import thumbs
+    from PIL import Image
+    os.environ.pop("ANTHROPIC_API_KEY", None)
+    with tempfile.TemporaryDirectory() as d:
+        core.VIDEO_DIR = Path(d) / "영상"
+        thumbs.TEMPLATE_DIR = Path(d) / "틀"
+        ch = {**core.new_channel("역사"), "thumb_auto": True}
+        src = Path(d) / "seo.txt"
+        src.write_text(SEO2, "utf-8")
+        folder, _ = core.import_seo(ch, [src])
+        gen = Path(d) / "생성"
+        (gen / "2").mkdir(parents=True)
+        files = []
+        for name, color in (("1번 a.png", "red"), ("1번 b.png", "blue"), ("2/Gemini_7k2.png", "green"), ("이름없음.png", "gray")):
+            Image.new("RGB", (1600, 900), color).save(gen / name)
+            files.append(gen / name)
+        assert [steps.drop_number(f) for f in files] == [1, 1, 2, None]  # 번호 폴더, 아니면 이름 맨 앞 번호
+        assert [steps.drop_number(Path(n)) for n in ("Gemini_Generated_Image_7k2.png", "03-가.jpg", "x/12번.png")] == [None, 3, 12]
+        for n in (1, 2):
+            steps.add_candidates(folder, n, [f for f in files if steps.drop_number(f) == n])
+        _, items = steps.prep_items(ch)
+        assert [(i["num"], len(i["후보"])) for i in items] == [(1, 2), (2, 1)], items
+        assert items[0]["제목"] == "첫째 제목 1" and items[0]["썸네일문구"] == "문구 1 / 둘째 줄"
+        steps.remember(folder, 1, 선택=core.rel(items[0]["후보"][1]).split("/", 2)[2], 제목="고른 제목", 썸네일문구="고친 / 문구")
+        _, items = steps.prep_items(ch)
+        assert items[0]["선택"].name == "1번 b.png" and items[0]["제목"] == "고른 제목"
+        out = thumbs.preview(ch, items[0]["선택"], None, Path(d) / "미리.jpg")
+        assert Image.open(out).size == (640, 360)
+        final = thumbs.make_for(ch, folder, 1, items[0]["썸네일문구"], items[0]["제목"])
+        assert final.name == "1_자동썸네일.jpg" and Image.open(final).getpixel((640, 700))[2] > 150  # 고른 파란 그림
+        # 초안이 올라오면 목록은 준비 화면 값을 그대로 쓴다 (최종 썸네일도 번호로 찾음)
+        rows, problems = core.build_rows({**core.DEFAULT_CONFIG, "channels": [ch]}, [],
+                                         {"역사": {"영상_1_내보내기.mp4": "v1", "영상_2_내보내기.mp4": "v2"}})
+        r1 = next(r for r in rows if r["영상ID"] == "v1")
+        assert (r1["제목"], r1["썸네일문구"], r1["썸네일"]) == ("고른 제목", "고친 / 문구", core.rel(final)), r1
+        assert not any("후보" in p for p in problems if "_1_" in p), problems
 
 
 def test_publish_times():

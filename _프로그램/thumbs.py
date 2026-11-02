@@ -119,9 +119,7 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
     rnd = rnd or random.Random()
     tpl, plan = load_template(ch), plan or {}
     t = tpl["text"]
-    lines = [s.strip() for s in text.replace("\\n", "/").split("/") if s.strip()]
-    if not lines:
-        raise ValueError("썸네일 문구가 비어 있습니다.")
+    lines = [s.strip() for s in (text or "").replace("\\n", "/").split("/") if s.strip()]  # 비면 글자 없이 (후보 미리보기)
     if len(lines) > t["max_lines"]:
         raise ValueError(f"썸네일 문구가 {len(lines)}줄입니다 (이 채널은 {t['max_lines']}줄까지).")
     font_file = font_path(ch, tpl)
@@ -167,12 +165,23 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
 
     box = _mirror([round(v * (1 + rnd.uniform(-jit, jit))) if i < 2 else v for i, v in enumerate(t["box"])], side)
     stroke = t["stroke"]
-    font = _fit(lines, font_file, box, t, stroke)
+    font = None
+    while lines:  # 안 들어가면 가장 긴 줄을 가운데 가까운 띄어쓰기에서 나눠 다시 (/ 없이 쓴 긴 문구)
+        try:
+            font = _fit(lines, font_file, box, t, stroke)
+            break
+        except ValueError:
+            longest = max(range(len(lines)), key=lambda i: len(lines[i]))
+            spaces = [i for i, ch in enumerate(lines[longest]) if ch == " "]
+            if len(lines) >= t["max_lines"] or not spaces:
+                raise
+            cut = min(spaces, key=lambda i: abs(i - len(lines[longest]) / 2))
+            lines[longest:longest + 1] = [lines[longest][:cut].strip(), lines[longest][cut:].strip()]
     draw = ImageDraw.Draw(canvas)
-    step = font.size * (1 + t["line_gap"])
+    step = font.size * (1 + t["line_gap"]) if font else 0
     total = step * len(lines)
     y = box[1] + {"top": 0, "bottom": box[3] - total}.get(t["valign"], (box[3] - total) / 2)
-    accents = plan.get("accents") or [lines[-1]]
+    accents = plan.get("accents") or lines[-1:]
     for line in lines:
         width = font.getbbox(line, stroke_width=stroke)[2]
         x = box[0] if side == "left" else box[0] + box[2] - width
@@ -199,30 +208,70 @@ def save(img, path):
     raise ValueError("썸네일을 2MB 아래로 줄이지 못했습니다.")
 
 
-def make(ch, row, key="", log=print, force=False, rnd=None):
-    """영상 하나의 썸네일을 만들어 채널 폴더에 <번호>_자동썸네일.jpg 로 저장하고 경로를 돌려준다.
-    API 키(또는 ANTHROPIC_API_KEY)가 있으면 Claude가 글자 쪽·강조할 말을 정하고 실제 사진을 골라 넣는다.
-    문구와 재료 사진이 그대로면 다시 만들지 않는다 (force면 새로)."""
-    base = core.material(row)
-    if not base:
-        raise FileNotFoundError(f"재료 사진이 없습니다: 채널 폴더/{core.MATERIAL}/ 에 같은 번호 사진을 넣어주세요.")
-    text = row["썸네일문구"].strip()
-    if not text:
-        raise ValueError("썸네일 문구가 비어 있습니다.")
-    num = min(core._nums(Path(row["파일"])))
-    path = (core.VIDEO_DIR / row["파일"]).parent / f"{num}_자동썸네일.jpg"
+def fetch_photo(folder, num, title, desc, text, key="", log=print, force=False):
+    """주제마다 실제 사진 1장 (위키미디어 공용, 저작권 풀린 것만): 채널 폴더/실제사진/<순번>.jpg. 없으면 None.
+    한 번 찾으면 다시 찾지 않는다 (force면 새로, 앞에서 고른 것은 빼고)."""
+    path = Path(folder) / core.PHOTOS / f"{num}.jpg"
     note = path.with_suffix(".json")
-    sig = {"text": text, "base": base.name, "size": base.stat().st_size}
+    old = json.loads(note.read_text("utf-8")) if note.exists() else {}
+    if path.exists() and not force:
+        return path
+    if old.get("none") and not force:
+        return None
+    if not (key or os.environ.get("ANTHROPIC_API_KEY")):
+        return None
+    import ai
+    cl = ai.client(key)
+    queries = ai.queries(cl, title, desc, text)
+    photo, credit = ai.find_photo(cl, queries, text, title, log, skip=old.get("skip", []) + [old.get("credit", "")])
+    path.parent.mkdir(exist_ok=True)
+    note.write_text(json.dumps({"credit": credit, "queries": queries, "none": not photo,
+                                "skip": old.get("skip", []) + ([old["credit"]] if force and old.get("credit") else [])},
+                               ensure_ascii=False, indent=1), "utf-8")
+    if not photo:
+        path.unlink(missing_ok=True)
+        return None
+    photo.convert("RGB").save(path, "JPEG", quality=90)
+    return path
+
+
+def preview(ch, base, photo, out):
+    """후보 미리보기: 후보 그림 + 실제 사진 (글자 없이). 채널 마크는 그대로."""
+    img = compose(ch, base, "", {"side": "left"}, photo, random.Random(0))
+    img.thumbnail((640, 360))
+    img.save(out, "JPEG", quality=85)
+    return out
+
+
+def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=False, rnd=None):
+    """순번 하나의 최종 썸네일: 고른 후보 그림 + 실제 사진 + 문구 + 채널 마크 → 채널 폴더/<순번>_자동썸네일.jpg.
+    API 키가 있으면 Claude가 글자 쪽·강조할 말을 정한다. 그림·문구·실제 사진이 그대로면 다시 만들지 않는다."""
+    base = core.material_for(folder, num)
+    if not base:
+        raise FileNotFoundError(f"{num}번 썸네일 후보 그림이 없습니다. 준비 화면에서 넣어주세요.")
+    text = (text or "").strip()
+    if not text:
+        raise ValueError(f"{num}번 썸네일 문구가 비어 있습니다.")
+    tpl = load_template(ch)
+    photo = fetch_photo(folder, num, title, desc, text, key, log) if tpl.get("inset") else None
+    path = Path(folder) / f"{num}_자동썸네일.jpg"
+    note = path.with_suffix(".json")
+    sig = {"text": text, "base": base.name, "size": base.stat().st_size, "photo": photo.stat().st_size if photo else 0}
     if not force and path.exists() and note.exists() and json.loads(note.read_text("utf-8")).get("sig") == sig:
         return path
-    tpl = load_template(ch)
-    plan, photo, credit = {}, None, ""
+    plan = {}
     if key or os.environ.get("ANTHROPIC_API_KEY"):
         import ai
-        cl = ai.client(key)
-        plan = ai.plan(cl, base, text, row["제목"], row["설명"], tpl["text"]["sides"])
-        if tpl.get("inset"):
-            photo, credit = ai.find_photo(cl, plan.get("queries", []), text, row["제목"], log)
+        plan = ai.plan(ai.client(key), base, text, title, desc, tpl["text"]["sides"])
     save(compose(ch, base, text, plan, photo, rnd), path)
-    note.write_text(json.dumps({"sig": sig, "plan": plan, "photo": credit}, ensure_ascii=False, indent=1), "utf-8")
+    note.write_text(json.dumps({"sig": sig, "plan": plan}, ensure_ascii=False, indent=1), "utf-8")
     return path
+
+
+def make(ch, row, key="", log=print, force=False, rnd=None):
+    """목록의 한 줄로 최종 썸네일 (2. 자동 처리에서)."""
+    num = core.row_num(row)
+    if num is None:
+        raise ValueError("영상 파일 이름에서 순번을 못 찾았습니다.")
+    return make_for(ch, (core.VIDEO_DIR / row["파일"]).parent, num, row["썸네일문구"], row["제목"], row["설명"],
+                    key, log, force, rnd)

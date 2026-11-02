@@ -84,6 +84,16 @@ def plan(cl, base, text, title, desc, sides):
     return out
 
 
+def queries(cl, title, desc, text):
+    """주제에 맞는 실제 사진·기록·지도·유물을 위키미디어 공용에서 찾을 영어 검색어 3개."""
+    out = ask(cl, [{"type": "text", "text": (
+        f"유튜브 영상의 썸네일에 넣을 실제 사진을 위키미디어 공용(Wikimedia Commons)에서 찾습니다.\n"
+        f"영상 제목: {title}\n썸네일 문구: {text}\n영상 설명: {desc[:600]}\n\n"
+        "이 주제의 실제 사진·기록·지도·유물·그림을 찾을 영어 검색어 3개를 주세요. 구체적인 인물·사건·장소·물건 이름으로.")}],
+        _schema({"queries": {"type": "array", "items": {"type": "string"}}}))
+    return out.get("queries", [])[:3]
+
+
 def search_commons(query, limit=6):
     """위키미디어 공용에서 저작권이 풀린(퍼블릭 도메인·CC0) 사진만. [{'title', 'url'}]"""
     params = {"action": "query", "format": "json", "generator": "search", "gsrnamespace": 6, "gsrlimit": limit,
@@ -108,9 +118,9 @@ def download(url):
         return Image.open(io.BytesIO(res.read())).convert("RGB")
 
 
-def find_photo(cl, queries, text, title, log=print, per_query=4, limit=6):
-    """검색어로 후보를 모아 Claude가 하나 고른다. 맞는 게 없으면 None. (사진, 이름)"""
-    cands, seen = [], set()
+def find_photo(cl, queries, text, title, log=print, per_query=4, limit=6, skip=()):
+    """검색어로 후보를 모아 Claude가 하나 고른다. 맞는 게 없으면 None. (사진, 이름). skip: 빼고 고를 사진 이름"""
+    cands, seen = [], set(skip)
     for q in queries[:3]:
         try:
             found = search_commons(q, per_query)

@@ -1,4 +1,5 @@
 """창 화면. 오래 걸리는 일은 별도 스레드에서 돌리고, 화면 갱신은 메인 스레드에서만 한다."""
+import json
 import os
 import queue
 import re
@@ -83,6 +84,7 @@ class App:
         menu = tk.Menu(more, tearoff=0)
         for item in (("영상 폴더 열기", lambda: self.open_dir(core.VIDEO_DIR)), ("빈 묶음 폴더 만들기", self.make_batch),
                           ("완료 폴더 열기", lambda: self.open_dir(core.DONE_DIR)),
+                          ("사진·썸네일 넣기", self.add_thumbs),
                           ("엑셀로 열기", self.open_excel), ("작업 기록 보기", lambda: self.open_dir(core.LOG_DIR)), None,
                           ("목록(엑셀)만 다시 만들기", lambda: self.run(steps.build_excel)),
                           ("정보·댓글만 넣기", lambda: self.run(steps.fill_all)), None,
@@ -104,8 +106,8 @@ class App:
         self.cards, self.buttons = {}, {}
         self.step_buttons = []
         for key, title, actions in (
-                ("1", "준비", (("SEO 넣기", self.import_seo), ("작업표 열기", self.open_sheet),
-                              ("사진·썸네일 넣기", self.add_thumbs))),
+                ("1", "준비", (("SEO 넣기", self.import_seo), ("준비 화면", self.open_prep),
+                              ("작업표 열기", self.open_sheet))),
                 ("2", "자동 처리", (("▶ 시작", self.auto_run),)),
                 ("3", "댓글 고정", (("탭 열기", self.pin_window),)),
                 ("4", "예약 걸기", (("실행", lambda: self.run(steps.schedule_all)),))):
@@ -458,8 +460,20 @@ class App:
             return
         if memos:
             self.import_seo(memos, ch)
-        if pics:
+        if pics and not ch["thumb_auto"]:
             self.add_thumbs(pics, ch)
+        elif pics:  # 썸네일 자동 만들기 채널: 이름(또는 폴더)의 번호대로 그 영상의 후보 그림으로
+            dirs = core.channel_dirs(ch)
+            if not dirs:
+                return messagebox.showinfo("넣기", "먼저 이 채널의 SEO를 넣어주세요.")
+            unknown = [f.name for f in pics if self.steps.drop_number(f) is None]
+            for num in {self.steps.drop_number(f) for f in pics} - {None}:
+                self.steps.add_candidates(dirs[-1], num, [f for f in pics if self.steps.drop_number(f) == num])
+            self.log(f"[{ch['name']}] 후보 그림 {len(pics) - len(unknown)}개를 번호대로 넣었습니다.")
+            self.open_prep(again=True)
+            if unknown:
+                messagebox.showinfo("넣기", "이름에 번호가 없어 어느 영상 것인지 모르는 그림이 있어요.\n"
+                                    "준비 화면의 영상 칸 위에 끌어다 놓아주세요:\n" + "\n".join(unknown[:20]))
 
     def import_seo(self, paths=None, ch=None):
         cfg = core.load_config()
@@ -475,9 +489,9 @@ class App:
         except (ValueError, OSError) as e:
             return messagebox.showerror("SEO 넣기", str(e))
         self.log(f"[{ch['name']}] SEO를 넣었습니다: 영상/{core.rel(folder)}\n"
-                 "작업표를 보고 썸네일을 만든 뒤 '썸네일 넣기'로 넣으세요 (이름에 순번 숫자). 영상은 Studio에 올리면 됩니다.")
-        open_path(sheet)
+                 "준비 화면에서 영상마다 후보 그림을 넣고 골라 제목·썸네일 문구를 고치세요. 영상은 Studio에 올리면 됩니다.")
         self.refresh_status()
+        self.open_prep(again=True)
 
     def _working_channel(self, title):
         cfg = core.load_config()
@@ -632,6 +646,14 @@ class App:
         ttk.Button(bar, text="청소하기", command=go).pack(side="right")
         fit(win)
 
+    def open_prep(self, again=False):
+        prep = getattr(self, "prep", None)
+        if prep and prep.win.winfo_exists():
+            if not again:
+                return prep.win.lift()
+            prep.win.destroy()  # 새 SEO·그림이 들어왔으면 새로
+        PrepWindow(self)
+
     def open_settings(self):
         if self.settings and self.settings.win.winfo_exists():
             return self.settings.win.lift()  # 설정 창은 하나만
@@ -705,6 +727,257 @@ def scroll_area(win):
 
 def candidates(text):
     return [x.split(". ", 1)[-1] for x in text.splitlines() if x.strip()]
+
+
+class PrepWindow:
+    """1. 준비 화면: 채널별 탭에 SEO 항목(영상)마다 후보 그림 고르기, 제목·썸네일 문구 고치기, 설명·댓글 보기,
+    실제 사진(주제마다 1장, 자동)과 최종 썸네일. 고친 것은 바로 채널 폴더/제작.json 에 저장된다."""
+    PREVIEW, FINAL = 200, 320
+
+    def __init__(self, app):
+        app.prep, self.app = self, app
+        self.cfg = core.load_config()
+        win = self.win = tk.Toplevel(app.root)
+        room = win.winfo_screenwidth() - 160  # 영상 칸이 화면 폭을 넘지 않게 그림 크기를 맞춘다
+        self.FINAL = max(220, min(320, int(room * 0.24)))
+        self.PREVIEW = max(110, min(200, int((room - self.FINAL - 170) / 4.3)))
+        win.title("준비 — 후보 그림·제목·썸네일 문구")
+        top = ttk.Frame(win, padding=(12, 10, 12, 4))
+        top.pack(fill="x")
+        ttk.Label(top, justify="left", text=(
+            "영상마다 후보 그림을 클릭해 고르고 제목·썸네일 문구(/ 로 줄 나눔)를 고치세요. 고친 것은 바로 저장됩니다.\n"
+            "그림은 영상 칸에 끌어다 놓거나 '그림 넣기'. 실제 사진은 주제마다 자동으로 찾아 합성해 보여줍니다.")).pack(side="left")
+        ttk.Button(top, text="최종 썸네일 만들기 (전부)", command=self.make_all).pack(side="right")
+        self.tabs = ttk.Notebook(win)
+        self.tabs.pack(fill="both", expand=True, padx=8, pady=4)
+        self.cards, self.images, self.canvases = {}, [], []
+        for ch in self.cfg["channels"]:
+            folder, items = self.app.steps.prep_items(ch)
+            if not items:
+                continue
+            tab = ttk.Frame(self.tabs)
+            self.tabs.add(tab, text=f" {ch['name']} ({len(items)}) ")
+            if not ch["thumb_auto"]:
+                ttk.Label(tab, foreground=COLORS["muted"], padding=6, text=(
+                    "이 채널은 썸네일을 직접 만든 완성본으로 넣습니다 (설정에서 '썸네일 자동 만들기'를 켜면 여기서 후보를 골라 만듭니다).")).pack(anchor="w")
+            inner = scroll_area(tab)
+            self.canvases.append(inner.master)
+            for i, item in enumerate(items):
+                self.card(inner, ch, folder, item, i)
+        if not self.cards:
+            ttk.Label(win, padding=20, text="아직 SEO가 없습니다. 메인 창에서 'SEO 넣기'를 하거나 SEO 메모장을 끌어다 놓으세요.").pack()
+        win.bind("<MouseWheel>", lambda e: self.current_canvas() and self.current_canvas().yview_scroll(int(-e.delta / 120), "units"))
+        try:
+            from tkinterdnd2 import DND_FILES
+            win.drop_target_register(DND_FILES)
+            win.dnd_bind("<<Drop>>", lambda e: (self.drop(win.tk.splitlist(e.data), e.x_root, e.y_root), e.action)[1])
+        except Exception:
+            pass
+        fit(win)
+        self.find_photos()
+
+    def current_canvas(self):
+        i = self.tabs.index("current") if self.tabs.tabs() else None
+        return self.canvases[i] if i is not None and i < len(self.canvases) else None
+
+    # --- 영상 칸 하나 ---
+    def card(self, parent, ch, folder, item, i):
+        num = item["num"]
+        box = ttk.LabelFrame(parent, text=f" {num}. {item['orig']} ", padding=8)
+        box.grid(row=i, column=0, sticky="ew", pady=4, padx=2)
+        c = self.cards[(ch["name"], num)] = {"ch": ch, "folder": folder, "item": item, "box": box}
+        pics = c["pics"] = ttk.Frame(box)
+        pics.grid(row=0, column=0, columnspan=2, sticky="w")
+        side = ttk.Frame(box)
+        side.grid(row=0, column=2, rowspan=4, sticky="ne", padx=(10, 0))
+        c["final"] = tk.Label(side, text="최종 썸네일 아직 없음", width=40, height=9, relief="groove")
+        c["final"].pack()
+        bar = ttk.Frame(side)
+        bar.pack(fill="x", pady=(4, 0))
+        if ch["thumb_auto"]:
+            ttk.Button(bar, text="최종 만들기", command=lambda: self.make(c, force=True)).pack(side="right")
+            ttk.Button(bar, text="실제 사진 다시 찾기", command=lambda: self.find_photos([c], force=True)).pack(side="right", padx=4)
+        c["photo_note"] = ttk.Label(side, foreground=COLORS["muted"], wraplength=self.FINAL)
+        c["photo_note"].pack(anchor="w")
+        c["err"] = ttk.Label(side, foreground=COLORS["accent"], wraplength=self.FINAL)
+        c["err"].pack(anchor="w")
+        for j, (key, label, values) in enumerate((("제목", "제목", item["titles"]),
+                                                   ("썸네일문구", "썸네일 문구", item["thumb_texts"])), 1):
+            ttk.Label(box, text=label, foreground=COLORS["muted"]).grid(row=j, column=0, sticky="w", padx=(0, 6))
+            var = c[key] = tk.StringVar(value=item[key])
+            combo = ttk.Combobox(box, textvariable=var, values=values, width=52)
+            combo.grid(row=j, column=1, sticky="w", pady=2)
+            for ev in ("<<ComboboxSelected>>", "<FocusOut>", "<Return>"):
+                combo.bind(ev, lambda e, k=key: self.save(c, k))
+        more = ttk.Frame(box)
+        toggle = ttk.Button(box, text="설명·고정 댓글 ▸")
+        toggle.grid(row=3, column=1, sticky="w", pady=(4, 0))
+        for k, (key, h) in enumerate((("설명", 6), ("고정댓글", 4))):
+            ttk.Label(more, text="설명" if key == "설명" else "고정 댓글", foreground=COLORS["muted"]).grid(row=k, column=0, sticky="nw")
+            text = c[key] = scrolledtext.ScrolledText(more, height=h, width=70, wrap="word", font=(FONT, 9))
+            text.insert("1.0", item[key])
+            text.grid(row=k, column=1, sticky="w", pady=2)
+            text.bind("<FocusOut>", lambda e, kk=key: self.save(c, kk))
+        toggle.config(command=lambda: (more.grid_remove(), toggle.config(text="설명·고정 댓글 ▸")) if more.winfo_ismapped()
+                      else (more.grid(row=4, column=0, columnspan=3, sticky="w"), toggle.config(text="설명·고정 댓글 ▾")))
+        self.show_pics(c)
+        self.show_final(c)
+
+    def show_pics(self, c):
+        """후보 그림들 (실제 사진이 있으면 합성한 미리보기). 클릭하면 고름."""
+        for w in c["pics"].winfo_children():
+            w.destroy()
+        item = c["item"]
+        if c["ch"]["thumb_auto"]:
+            if not item["후보"]:
+                ttk.Label(c["pics"], foreground=COLORS["muted"], text="후보 그림이 없습니다 — 이 칸에 끌어다 놓거나 '그림 넣기'").grid(
+                    row=0, column=0, padx=(0, 8))
+            for k, path in enumerate(item["후보"]):  # 4개씩 한 줄
+                chosen = item["선택"] and Path(path) == Path(item["선택"])
+                lab = tk.Label(c["pics"], text="…", width=20, height=5, highlightthickness=4, cursor="hand2",
+                               highlightbackground=COLORS["accent"] if chosen else COLORS["card"])
+                lab.grid(row=k // 4, column=k % 4, padx=2, pady=2)
+                lab.bind("<Button-1>", lambda e, p=path: self.choose(c, p))
+                self.render(lab, c, path)
+            n = len(item["후보"])
+            ttk.Button(c["pics"], text="그림 넣기", command=lambda: self.add(c)).grid(
+                row=max(n - 1, 0) // 4, column=4 if n else 1, padx=6, sticky="w")
+        photo = item["실제사진"]
+        note = json.loads((photo.with_suffix(".json")).read_text("utf-8")).get("credit", "") if photo and photo.with_suffix(".json").exists() else ""
+        c["photo_note"].config(text=f"실제 사진: {note}" if photo else ("실제 사진: 아직 (API 키가 있으면 자동으로 찾음)"
+                                                                    if c["ch"]["thumb_auto"] else ""))
+
+    def render(self, label, c, path):
+        """미리보기를 작업 스레드에서 만들고 화면에는 메인 스레드에서 붙인다."""
+        def work():
+            try:
+                import thumbs
+                from PIL import Image
+                img = thumbs.compose(c["ch"], path, "", {"side": "left"}, c["item"]["실제사진"]) if c["item"]["실제사진"] \
+                    else Image.open(path).convert("RGB")
+                img.thumbnail((self.PREVIEW, self.PREVIEW))
+            except Exception as e:
+                img = str(e)
+
+            def put():
+                if not label.winfo_exists():
+                    return
+                if isinstance(img, str):
+                    return label.config(text=img[:40])
+                from PIL import ImageTk
+                tkimg = ImageTk.PhotoImage(img)
+                self.images.append(tkimg)
+                label.config(image=tkimg, text="", width=0, height=0)
+            self.app.later(put)
+        threading.Thread(target=work, daemon=True).start()
+
+    def show_final(self, c):
+        final = c["item"]["최종"]
+        img = photo_image(final, self.FINAL) if final else None
+        if img:
+            self.images.append(img)
+        c["final"].config(image=img or "", text="" if img else "최종 썸네일 아직 없음",
+                          width=0 if img else 40, height=0 if img else 9)
+
+    def refresh(self, c):
+        _, items = self.app.steps.prep_items(c["ch"])
+        c["item"] = next((i for i in items if i["num"] == c["item"]["num"]), c["item"])
+        self.show_pics(c)
+        self.show_final(c)
+
+    # --- 고르기·저장·넣기 ---
+    def choose(self, c, path):
+        self.app.steps.remember(c["folder"], c["item"]["num"], 선택=str(Path(path).relative_to(c["folder"])))
+        self.refresh(c)
+
+    def save(self, c, key):
+        widget = c[key]
+        value = widget.get().strip() if isinstance(widget, tk.StringVar) else widget.get("1.0", "end").strip()
+        if value and value != c["item"][key]:
+            self.app.steps.remember(c["folder"], c["item"]["num"], **{key: value})
+            c["item"][key] = value
+
+    def add(self, c, paths=None):
+        paths = paths or filedialog.askopenfilenames(parent=self.win, title=f"{c['item']['num']}번 후보 그림 (여러 개 가능)",
+                                                     filetypes=[("그림", "*.png *.jpg *.jpeg"), ("모든 파일", "*.*")])
+        pics = [p for p in map(Path, paths or []) if p.suffix.lower() in core.IMAGE_EXT]
+        if pics:
+            self.app.steps.add_candidates(c["folder"], c["item"]["num"], pics)
+            self.refresh(c)
+
+    def drop(self, paths, x, y):
+        """영상 칸 위에 놓으면 그 영상의 후보, 다른 곳이면 파일·폴더 이름의 번호로 나눈다."""
+        files = []
+        for p in map(Path, paths):
+            files += sorted(f for f in p.rglob("*") if f.is_file()) if p.is_dir() else [p]
+        pics = [f for f in files if f.suffix.lower() in core.IMAGE_EXT]
+        w = self.win.winfo_containing(x, y)
+        while w is not None and not any(c["box"] is w for c in self.cards.values()):
+            w = w.master
+        target = next((c for c in self.cards.values() if c["box"] is w), None)
+        if target:
+            return self.add(target, pics)
+        tab = self.current_channel()
+        unknown = []
+        for f in pics:
+            c = self.cards.get((tab, self.app.steps.drop_number(f)))
+            (c and self.add(c, [f])) if c else unknown.append(f.name)
+        if unknown:
+            messagebox.showinfo("그림 넣기", "어느 영상 것인지 모르는 그림이 있어요. 영상 칸 위에 끌어다 놓아주세요:\n"
+                                + "\n".join(unknown[:20]), parent=self.win)
+
+    def current_channel(self):
+        i = self.tabs.index("current") if self.tabs.tabs() else None
+        names = [ch["name"] for ch in self.cfg["channels"] if any(k[0] == ch["name"] for k in self.cards)]
+        return names[i] if i is not None and i < len(names) else None
+
+    # --- 실제 사진·최종 썸네일 (작업 스레드) ---
+    def _background(self, cards, job, label):
+        def work():
+            from concurrent.futures import ThreadPoolExecutor
+
+            def one(c):
+                err = ""
+                try:
+                    job(c)
+                except Exception as e:
+                    err = f"✗ {label}: {e}"
+                    self.app.log(f"  ✗ [{c['ch']['name']}] {c['item']['num']}번 {label}: {e}")
+                self.app.later(lambda: self.win.winfo_exists() and (self.refresh(c), c["err"].config(text=err)))
+            with ThreadPoolExecutor(4) as pool:
+                list(pool.map(one, cards))
+            self.app.log(f"{label}: 끝났습니다.")
+        threading.Thread(target=work, daemon=True).start()
+
+    def find_photos(self, cards=None, force=False):
+        import thumbs
+        key = self.cfg.get("claude_key", "")
+        if not (key or os.environ.get("ANTHROPIC_API_KEY")):
+            return
+        todo = [c for c in (cards or self.cards.values()) if c["ch"]["thumb_auto"] and (force or not c["item"]["실제사진"])]
+        todo = [c for c in todo if force or not (c["folder"] / core.PHOTOS / f"{c['item']['num']}.json").exists()]
+        if todo:
+            self.app.log(f"실제 사진을 찾습니다: {len(todo)}개 주제")
+            self._background(todo, lambda c: thumbs.fetch_photo(
+                c["folder"], c["item"]["num"], c["item"]["제목"], c["item"]["설명"], c["item"]["썸네일문구"],
+                key, self.app.log, force), "실제 사진 찾기")
+
+    def make(self, c, force=False):
+        self.make_all([c], force)
+
+    def make_all(self, cards=None, force=False):
+        import thumbs
+        for c in self.cards.values():  # 아직 칸에서 안 빠져나온 고친 값도 저장
+            for k in ("제목", "썸네일문구"):
+                self.save(c, k)
+        todo = [c for c in (cards or self.cards.values()) if c["ch"]["thumb_auto"] and c["item"]["선택"]]
+        if not todo:
+            return messagebox.showinfo("최종 썸네일", "후보 그림이 있는 영상이 없습니다.", parent=self.win)
+        key = self.cfg.get("claude_key", "")
+        self.app.log(f"최종 썸네일을 만듭니다: {len(todo)}개")
+        self._background(todo, lambda c: thumbs.make_for(
+            c["ch"], c["folder"], c["item"]["num"], c["item"]["썸네일문구"], c["item"]["제목"], c["item"]["설명"],
+            key, self.app.log, force), "최종 썸네일")
 
 
 class TitleReview:

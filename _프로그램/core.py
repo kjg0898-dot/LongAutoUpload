@@ -47,7 +47,9 @@ DEFAULT_CONFIG = {"channels": [], "max_fails": 3, "mode": "한 번에 전체", "
 COLUMNS = ["채널", "파일", "제목", "회원우선", "예약일시", "상태", "오류", "영상ID",
            "제목후보", "설명", "태그", "고정댓글", "메모장", "썸네일", "썸네일문구", "썸네일문구후보"]
 EDITABLE = ("제목", "회원우선", "예약일시", "영상ID", "썸네일", "썸네일문구")  # 썸네일: 없이 올리려면 "없음"
-MATERIAL = "재료"  # 채널 폴더 안: 썸네일 자동 만들기에 깔 사진 (썸네일로 짝짓지 않음)
+MATERIAL = "재료"  # 채널 폴더 안: 썸네일 후보 그림 (번호 이름 또는 번호 폴더). 썸네일로 짝짓지 않음
+PHOTOS = "실제사진"  # 채널 폴더 안: 주제마다 찾아 둔 실제 사진 (썸네일로 짝짓지 않음)
+PREP = "제작.json"  # 채널 폴더 안: 준비 화면에서 고른 것 {순번: {제목, 썸네일문구, 설명, 고정댓글, 선택}}
 MEMBER_TODO = "회원 설정 필요"  # API로 못 하는 회원 전용 공개를 사용자가 Studio에서 해야 함
 DONE_STATES = ("예약완료", MEMBER_TODO, "완료(회원 직접설정)")
 
@@ -353,7 +355,8 @@ def scan_channel(folder, drafts=()):
     virtual = [Path(folder) / n for n in dict.fromkeys(drafts) if n.lower() not in names]
     videos = sorted(local + virtual, key=natural_key)
     entries = load_entries(p for p in files if p.suffix.lower() == ".txt")
-    images = [p for p in files if p.suffix.lower() in IMAGE_EXT and MATERIAL not in p.relative_to(folder).parts]
+    images = [p for p in files if p.suffix.lower() in IMAGE_EXT
+              and not {MATERIAL, PHOTOS} & set(p.relative_to(folder).parts)]
     pairs = []
     for v in videos:
         entry, sure_e = _match_entry(v, entries, videos)
@@ -373,12 +376,52 @@ def scan_channel(folder, drafts=()):
     return [(v, e[0], t[0]) for v, e, t in pairs]
 
 
-def material(row):
-    """썸네일 자동 만들기의 재료 사진: 채널 폴더/재료/ 안에서 영상 파일 이름과 같은 번호. 없으면 None."""
-    folder = (VIDEO_DIR / row["파일"]).parent / MATERIAL
+def load_prep(folder):
+    path = Path(folder) / PREP
+    try:
+        return json.loads(path.read_text("utf-8")) if path.exists() else {}
+    except ValueError:
+        return {}
+
+
+def save_prep(folder, data):
+    path = Path(folder) / PREP
+    tmp = path.with_name(path.name + ".저장중")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), "utf-8")
+    os.replace(tmp, path)
+
+
+def candidates(folder, num):
+    """이 순번의 썸네일 후보 그림: 채널 폴더/재료/ 안에서 이름에 그 번호가 있거나 그 번호 폴더(재료/3/…) 안에 있는 것."""
+    base = Path(folder) / MATERIAL
+    out = []
+    for p in sorted(base.rglob("*")) if base.exists() else []:
+        if p.suffix.lower() not in IMAGE_EXT:
+            continue
+        parts = p.relative_to(base).parts
+        n = int(parts[0]) if len(parts) > 1 and parts[0].isdigit() else next(iter(_nums(p)), None) if len(_nums(p)) == 1 else None
+        if n == num:
+            out.append(p)
+    return out
+
+
+def material_for(folder, num):
+    """썸네일에 깔 그림: 준비 화면에서 고른 것, 안 골랐으면 첫 후보. 없으면 None."""
+    pick = load_prep(folder).get(str(num), {}).get("선택")
+    if pick and (Path(folder) / pick).is_file():
+        return Path(folder) / pick
+    return next(iter(candidates(folder, num)), None)
+
+
+def row_num(row):
     nums = _nums(Path(row["파일"]))
-    pics = [p for p in folder.rglob("*") if p.suffix.lower() in IMAGE_EXT] if folder.exists() else []
-    return _by_number(next(iter(nums)), pics, _nums) if len(nums) == 1 else None
+    return next(iter(nums)) if len(nums) == 1 else None
+
+
+def material(row):
+    """이 영상의 썸네일 바탕 그림 (영상 파일 이름의 번호 = 순번). 없으면 None."""
+    num = row_num(row)
+    return material_for((VIDEO_DIR / row["파일"]).parent, num) if num is not None else None
 
 
 def channel_dirs(ch):
@@ -563,11 +606,13 @@ def build_rows(cfg, old_rows, drafts=None, uploaded=None):
                     row |= fresh | ({"썸네일": "없음"} if keep_thumb else {})
                     row["제목"] = row["제목"] or info.get("title", "")
                     row["썸네일문구"] = row["썸네일문구"] or (texts[info.get("thumb_pick", 0)] if texts else "")
+                    prep = load_prep(folder).get(str(info.get("num")), {}) if entry else {}
+                    row.update({k: prep[k] for k in ("제목", "썸네일문구", "설명", "고정댓글") if prep.get(k)})
                     if not entry:
                         problems.append(f"{name}: 메모장(SEO) 내용을 못 찾음")
                     if ch["thumb_auto"]:  # 썸네일은 2. 자동 처리에서 만든다: 재료 사진만 있으면 됨
                         if not material(row):
-                            problems.append(f"{name}: 재료 사진을 못 찾음 (채널 폴더/{MATERIAL}/ 에 같은 번호 사진)")
+                            problems.append(f"{name}: 썸네일 후보 그림을 못 찾음 (준비 화면에서 넣거나 채널 폴더/{MATERIAL}/ 에 같은 번호)")
                     elif not row["썸네일"]:
                         problems.append(f"{name}: 썸네일을 못 찾음 (없이 올리려면 엑셀 썸네일 칸에 '없음')")
                     elif thumb and thumb.stat().st_size > THUMB_MAX:

@@ -1,6 +1,8 @@
 """버튼 하나 = 단계 하나. ui는 log(글), ask(질문)->bool, alert(경고), notify(끝났을 때 알림)을 가진 객체."""
 import math
 import os
+import re
+import shutil
 import time
 import webbrowser
 from collections import Counter
@@ -371,13 +373,14 @@ def auto_all(ui):
         changed = [(r, k, v) for r in new for k, v in picked.get(r["파일"], {}).items() if r[k] != v]
         for r, k, v in changed:
             r[k] = v
+            if core.row_num(r) is not None:  # 준비 화면과 같게 (다시 만들 때 고친 값이 되돌아가지 않게)
+                remember((core.VIDEO_DIR / r["파일"]).parent, core.row_num(r), **{k: v})
         if changed:
             _save(ui, rows)
         auto = {c["name"] for c in core.load_config()["channels"] if c["thumb_auto"]}
         targets = [r for r in new if r["채널"] in auto]
         if targets:
-            make_thumbnails(ui, rows, targets)
-            made = [r for r in targets if not r["오류"]]
+            made = make_thumbnails(ui, rows, targets)  # 준비 화면에서 이미 만든 것은 그대로라 다시 안 보여줌
             if made and not ui.review_thumbs(made):
                 return ui.log("썸네일 확인을 취소했습니다. 문구를 고친 뒤 '2. 자동 처리'를 다시 누르세요.")
     fill_all(ui)
@@ -402,6 +405,7 @@ def make_thumbnails(ui, rows, targets, force=False):
             ui.log(f"  ✗ 썸네일: {Path(r['파일']).name}: {e}")
     import ai
     before = len(ai.USAGE)
+    stamp = {r["파일"]: _mtime(r) for r in targets}
     with ThreadPoolExecutor(4) as pool:
         list(pool.map(one, targets))
     if len(ai.USAGE) > before:
@@ -409,6 +413,66 @@ def make_thumbnails(ui, rows, targets, force=False):
         ui.log(f"Claude 사용: 요청 {len(used)}번, 입력 {sum(i for i, _ in used):,} · 출력 {sum(o for _, o in used):,} 토큰 "
                f"→ 약 ${ai.cost(used):.2f}")
     _save(ui, rows)
+    return [r for r in targets if not r["오류"] and _mtime(r) != stamp[r["파일"]]]  # 새로 만든 것
+
+
+def _mtime(r):
+    p = core.VIDEO_DIR / r["썸네일"] if r["썸네일"] not in ("", "없음") else None
+    return p.stat().st_mtime_ns if p and p.exists() else None
+
+
+# ---------- 1. 준비 화면 (SEO를 넣은 뒤: 후보 그림 고르기·제목·문구, 최종 썸네일) ----------
+def remember(folder, num, **fields):
+    """준비 화면에서 고른 것 저장 (채널 폴더/제작.json)."""
+    data = core.load_prep(folder)
+    data.setdefault(str(num), {}).update(fields)
+    core.save_prep(folder, data)
+
+
+def prep_items(ch):
+    """이 채널의 마지막 묶음에서 SEO 항목마다: 순번·SEO 내용 + 고른 것 + 후보 그림 + 실제 사진 + 최종 썸네일."""
+    dirs = core.channel_dirs(ch)
+    if not dirs:
+        return None, []
+    folder = dirs[-1]
+    entries = [e for e in core.load_entries(folder.rglob("*.txt")) if e["num"] is not None]
+    prep, out = core.load_prep(folder), []
+    for e in sorted(entries, key=lambda e: e["num"]):
+        p, texts = prep.get(str(e["num"]), {}), e.get("thumb_texts", [])
+        final = folder / f"{e['num']}_자동썸네일.jpg"
+        photo = folder / core.PHOTOS / f"{e['num']}.jpg"
+        out.append({"num": e["num"], "orig": e["orig"], "titles": e["titles"], "thumb_texts": texts,
+                    "제목": p.get("제목") or e["title"],
+                    "썸네일문구": p.get("썸네일문구") or (texts[e.get("thumb_pick", 0)] if texts else ""),
+                    "설명": p.get("설명") or e["desc"], "고정댓글": p.get("고정댓글") or e["comment"],
+                    "선택": core.material_for(folder, e["num"]), "후보": core.candidates(folder, e["num"]),
+                    "실제사진": photo if photo.exists() else None, "최종": final if final.exists() else None})
+    return folder, out
+
+
+def drop_number(path):
+    """끌어다 놓은 그림의 순번: 번호 폴더(3/, 3번/) 안이면 그 번호, 아니면 파일 이름 맨 앞의 번호(3.png, 3번_a.png).
+    이름 중간의 숫자는 보지 않는다 (Gemini_Generated_Image_7k2… 같은 이름이 엉뚱한 영상으로 가지 않게)."""
+    p = Path(path)
+    m = re.fullmatch(r"\s*(\d{1,3})\s*번?\s*", p.parent.name) or re.match(r"\s*(\d{1,3})(?:번|[\s_\-.)]|$)", p.stem)
+    return int(m[1]) if m else None
+
+
+def add_candidates(folder, num, paths):
+    """후보 그림을 채널 폴더/재료/<순번>/ 에 넣는다 (이름이 같으면 뒤에 번호)."""
+    dest = Path(folder) / core.MATERIAL / str(num)
+    dest.mkdir(parents=True, exist_ok=True)
+    out = []
+    for p in map(Path, paths):
+        target, n = dest / p.name, 2
+        while target.exists():
+            target, n = dest / f"{p.stem}_{n}{p.suffix}", n + 1
+        shutil.copy2(p, target)
+        out.append(target)
+    return out
+
+
+# ---------- 4. 예약 걸기 ----------
 
 
 def thumb_test(ui):

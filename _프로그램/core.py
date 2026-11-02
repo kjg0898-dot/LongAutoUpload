@@ -59,6 +59,16 @@ def video_id(text):
     return m[1] if m else text
 
 
+def playlist_ids(text):
+    """재생목록 칸: 쉼표·줄바꿈으로 여러 개. 주소(…?list=PL…)를 통째로 붙여넣어도 ID만 뽑는다."""
+    out = []
+    for part in re.split(r"[,\s]+", str(text or "")):
+        m = re.search(r"[?&]list=([A-Za-z0-9_-]+)", part)
+        if part and (pid := m[1] if m else part) not in out:
+            out.append(pid)
+    return out
+
+
 def is_member(value):
     """회원우선 칸: O·예·Y만 '예'. 'X'나 '아니요'를 적어도 예로 치지 않게."""
     return str(value).strip().lower() in ("o", "ㅇ", "○", "●", "예", "y", "yes", "v", "✓", "true", "1")
@@ -89,6 +99,9 @@ def save_config(cfg):
         raise ValueError(f'영상 폴더 이름에 쓸 수 없는 글자가 있습니다 (\\ / : * ? " < > |): {", ".join(bad)}')
     for ch in cfg["channels"]:
         parse_slots(ch["slots"], ch["name"])
+        bad = [p for p in playlist_ids(ch["playlist"]) if not re.fullmatch(r"[A-Za-z0-9_-]{10,}", p)]
+        if bad:
+            raise ValueError(f"[{ch['name']}] 재생목록 주소나 ID가 이상합니다: {', '.join(bad)}")
     CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8")
     VIDEO_DIR.mkdir(exist_ok=True)
 

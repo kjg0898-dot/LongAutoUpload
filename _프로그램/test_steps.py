@@ -102,7 +102,7 @@ def setup(d):
     core.VIDEO_DIR, core.DONE_DIR = Path(d) / "영상", Path(d) / "완료"
     core.EXCEL, core.CONFIG, core.BACKUP_DIR = Path(d) / "목록.xlsx", Path(d) / "설정.json", Path(d) / "백업"
     ch = {**core.new_channel("명언"), "folder": "명언", "members": True, "channel_id": "UC1",
-          "slots": "월 18:00, 수 18:00, 금 18:00", "playlist": "PL1"}
+          "slots": "월 18:00, 수 18:00, 금 18:00", "playlist": "PLtestlist01"}
     core.save_config({**core.DEFAULT_CONFIG, "channels": [ch]})
     (core.VIDEO_DIR / "b" / "명언").mkdir(parents=True)
     for n in (1, 2, 3):

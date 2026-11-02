@@ -307,6 +307,21 @@ def test_update_keeps_private_files():
         assert update.apply(buf.getvalue(), root) == 0  # 두 번째는 바뀔 것 없음
 
 
+def test_playlist_ids():
+    url = "https://www.youtube.com/playlist?list=PLabcdefghij12"
+    assert core.playlist_ids(f"{url}, PLzzzzzzzzzz9\nPLabcdefghij12") == ["PLabcdefghij12", "PLzzzzzzzzzz9"]
+    assert core.playlist_ids("") == [] and core.playlist_ids("  ") == []
+    with tempfile.TemporaryDirectory() as d:
+        core.CONFIG, core.VIDEO_DIR = Path(d) / "설정.json", Path(d) / "영상"
+        ch = {**core.DEFAULT_CHANNEL, "name": "A", "folder": "A", "slots": "월 12:00"}
+        core.save_config({**core.DEFAULT_CONFIG, "channels": [{**ch, "playlist": url}]})
+        try:
+            core.save_config({**core.DEFAULT_CONFIG, "channels": [{**ch, "playlist": "내 재생목록"}]})
+            raise AssertionError("이상한 재생목록이 저장됨")
+        except ValueError as e:
+            assert "재생목록" in str(e)
+
+
 def test_video_id():
     for text in ("https://youtu.be/r5zy1xVJTwM", "youtu.be/r5zy1xVJTwM?si=abc", "https://www.youtube.com/watch?v=r5zy1xVJTwM&t=3",
                  "https://studio.youtube.com/video/r5zy1xVJTwM/edit", "https://youtube.com/shorts/r5zy1xVJTwM",

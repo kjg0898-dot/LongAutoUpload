@@ -272,7 +272,8 @@ def fill_all(ui):
         if any(r["상태"] == "댓글완료" for r in rows):
             return ui.log("정보·댓글은 모두 넣었습니다 → 3. 고정 탭 열기")
         return ui.log("2단계에서 할 영상이 없습니다. 1단계(엑셀 만들기)를 먼저 해주세요.")
-    units = sum(yt.COST_FILL if r["상태"] == "" else 50 for r in todo_all)
+    extra = {ch["name"]: 50 * max(len(core.playlist_ids(ch["playlist"])) - 1, 0) for ch in cfg["channels"]}  # 재생목록 하나는 COST_FILL에 포함
+    units = sum(yt.COST_FILL + extra.get(r["채널"], 0) if r["상태"] == "" else 50 for r in todo_all)
     days = math.ceil(units / (yt.DAILY_QUOTA * 0.9))
     ui.log(f"영상 {len(todo_all)}개, 예상 할당량 {units:,} (하루 {yt.DAILY_QUOTA:,}) → "
            + ("오늘 다 됩니다." if days <= 1 else f"약 {days}일. 멈추면 다음 날 같은 버튼을 누르세요."))
@@ -306,8 +307,8 @@ def fill_all(ui):
                 yt.update_video(client, video, *_compose(ch, r, core.save_original(video)))
                 if r["썸네일"] not in ("", "없음"):
                     yt.set_thumbnail(client, video["id"], core.VIDEO_DIR / r["썸네일"])
-                if ch["playlist"].strip():
-                    yt.add_to_playlist(client, ch["playlist"].strip(), video["id"])
+                for playlist in core.playlist_ids(ch["playlist"]):
+                    yt.add_to_playlist(client, playlist, video["id"])
                 r["상태"] = "정보완료"
                 _save(ui, rows)
             kids = video["status"].get("selfDeclaredMadeForKids") or ch["kids"] == "예"

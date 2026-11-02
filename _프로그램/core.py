@@ -57,10 +57,13 @@ DEFAULT_CHANNEL = {
     "desc_mode": "맨 앞", "desc_marker": "",
     "tags_mode": "뒤에 추가", "playlist": "",
     "category": KEEP, "language": KEEP, "synthetic": KEEP, "kids": KEEP,
+    "reply": "끔", "reply_voice": "",  # 댓글 답글: 끔 / 확인 후 달기 / 자동으로 달기, 말투 메모
     "embeddable": KEEP, "license": KEEP, "thumb_auto": False,
     "channel_id": "", "channel_title": "",
 }
-DEFAULT_CONFIG = {"channels": [], "max_fails": 3, "mode": "한 번에 전체", "claude_key": ""}
+DEFAULT_CONFIG = {"channels": [], "max_fails": 3, "mode": "한 번에 전체", "claude_key": "",
+                  "reply_hours": 48, "reply_per_video": 15, "reply_max_run": 60}  # 답글: 공개 후 몇 시간, 영상마다·한 번에 최대 몇 개
+REPLY_MODES = ("끔", "확인 후 달기", "자동으로 달기")
 
 # 사용자가 고치는 칸(제목·회원우선·예약일시·영상ID)을 앞쪽에
 COLUMNS = ["채널", "파일", "제목", "회원우선", "예약일시", "상태", "오류", "영상ID",

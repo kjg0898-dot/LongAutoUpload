@@ -203,6 +203,59 @@ def reach_reports(creds, after=""):
     return found
 
 
+# ---------- 댓글 답글 ----------
+def fresh_public(yt, hours, limit=30):
+    """공개된 지 hours시간 안 된 내 영상들."""
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    out = []
+    for v in recent_videos(yt, limit):
+        pub = parse_dt_utc(v["snippet"].get("publishedAt"))
+        if v["status"].get("privacyStatus") == "public" and pub and now - pub <= timedelta(hours=hours):
+            out.append(v)
+    return out
+
+
+def _author(s):
+    return (s.get("authorChannelId") or {}).get("value")
+
+
+def new_comments(yt, video_id, channel_id):
+    """영상 댓글 중 내 것이 아니고 아직 내가 답하지 않은 것 (오래된 것부터). 한 번에 100개 (할당량 1)."""
+    res = execute(yt.commentThreads().list(part="snippet,replies", videoId=video_id, maxResults=100,
+                                           order="time", textFormat="plainText"))
+    out = []
+    for th in res.get("items", []):
+        top = th["snippet"]["topLevelComment"]
+        s = top["snippet"]
+        replies = (th.get("replies") or {}).get("comments", [])
+        if _author(s) == channel_id or any(_author(r["snippet"]) == channel_id for r in replies):
+            continue
+        out.append({"id": top["id"], "text": s.get("textOriginal") or s.get("textDisplay", ""),
+                    "author": s.get("authorDisplayName", ""), "likes": s.get("likeCount", 0), "at": s.get("publishedAt", "")})
+    return out[::-1]
+
+
+def my_replies(yt, channel_id, limit=30):
+    """내 채널이 예전에 단 답글들 (말투를 배우는 예시). [{'comment', 'reply'}]"""
+    res = execute(yt.commentThreads().list(part="snippet,replies", allThreadsRelatedToChannelId=channel_id,
+                                           maxResults=100, textFormat="plainText"))
+    out = []
+    for th in res.get("items", []):
+        top = th["snippet"]["topLevelComment"]["snippet"]
+        for r in (th.get("replies") or {}).get("comments", []):
+            if _author(r["snippet"]) == channel_id:
+                out.append({"comment": top.get("textOriginal") or top.get("textDisplay", ""),
+                            "reply": r["snippet"].get("textOriginal") or r["snippet"].get("textDisplay", "")})
+    return out[:limit]
+
+
+def reply(yt, parent_id, text):
+    """댓글에 답글 (할당량 50). 서버 오류로 다시 보내면 두 번 달릴 수 있어 재시도하지 않는다."""
+    return execute(yt.comments().insert(part="snippet", body={"snippet": {"parentId": parent_id, "textOriginal": text}}),
+                   retry=())
+
+
 def set_thumbnail(yt, video_id, path):
     from googleapiclient.http import MediaFileUpload
     execute(yt.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(str(path))))

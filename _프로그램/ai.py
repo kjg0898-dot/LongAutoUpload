@@ -139,6 +139,41 @@ def queries(cl, title, desc, text):
     return out.get("queries", [])[:3]
 
 
+def replies(cl, channel, title, desc, comments, voice):
+    """댓글마다 채널 주인이 직접 단 것 같은 답글 초안. 답하지 않을 댓글은 ''.
+    voice: {'note': 말투 메모, 'pinned': [고정 댓글], 'mine': [{'comment','reply'}], 'edits': [{'comment','draft','final'}]}
+    → {댓글 id: {'reply': str, 'why': str}}"""
+    parts = [f"유튜브 채널 '{channel}'의 주인으로서, 새 영상에 달린 시청자 댓글에 답글을 씁니다.",
+             f"영상 제목: {title}\n영상 설명: {desc[:1500]}",
+             "채널 시청자는 대부분 중장년층입니다."]
+    if voice.get("note"):
+        parts.append(f"채널 주인이 정한 말투: {voice['note']}")
+    if voice.get("mine"):
+        parts.append("채널 주인이 예전에 직접 단 답글 (이 말투·길이·분위기를 그대로 따를 것):\n" + "\n".join(
+            f"- 댓글: {m['comment'][:150]} → 답글: {m['reply'][:200]}" for m in voice["mine"][:20]))
+    if voice.get("pinned"):
+        parts.append("채널 주인이 쓴 고정 댓글 (말투 참고):\n" + "\n".join(f"- {p[:300]}" for p in voice["pinned"][:3]))
+    if voice.get("edits"):
+        parts.append("채널 주인이 초안을 이렇게 고쳐서 달았습니다. 고친 방향을 배워 처음부터 그렇게 쓸 것:\n" + "\n".join(
+            f"- 댓글: {e['comment'][:120]}\n  초안: {e['draft'][:200]}\n  고친 것: {e['final'][:200]}" for e in voice["edits"][-10:]))
+    parts.append(
+        "답글 규칙:\n"
+        "- 사람이 직접 쓴 것처럼: 댓글의 구체적인 말을 받아서 반응하고, 1~2문장으로 짧게.\n"
+        "- 정중한 존댓말. 어려운 말·유행어·줄임말을 피하고, 이모지는 쓰더라도 하나까지.\n"
+        "- 답글마다 표현을 다르게. '감사합니다!'만 있는 답, 같은 문장 되풀이, 틀에 박힌 인사 금지.\n"
+        "- 질문이면 영상 내용 안에서 정확하게 답하고, 모르는 것은 아는 척하지 말 것. 역사적 사실을 지어내지 말 것.\n"
+        "- 비판에는 변명하지 말고 정중하게 받아들이거나 짧게 설명.\n"
+        "- 링크, 구독·좋아요 부탁, 홍보, 다른 영상 강요 금지.\n"
+        "- 답하지 않을 댓글 (reply는 빈 문자열): 광고·스팸·사칭, 욕설·혐오·정치 싸움, 이모지나 한두 글자뿐, 무슨 말인지 모를 것, "
+        "개인정보, 답할 내용이 없는 것.\n"
+        "댓글 (id: 작성자: 내용):\n" + "\n".join(f"{c['id']}: {c['author']}: {c['text'][:500]}" for c in comments))
+    schema = _schema({"items": {"type": "array", "items": _schema({"id": {"type": "string"}, "reply": {"type": "string"},
+                                                                   "why": {"type": "string"}})}})
+    out = ask(cl, [{"type": "text", "text": "\n\n".join(parts)}], schema)
+    ids = {c["id"] for c in comments}
+    return {i["id"]: {"reply": i["reply"].strip(), "why": i.get("why", "")} for i in out.get("items", []) if i.get("id") in ids}
+
+
 RUBRIC = (("legibility", "작은 화면(168x94)에서도 글자가 읽히는가", 20),
           ("focus", "눈에 띄는 주인공 하나, 단순한 구성", 15),
           ("accuracy", "썸네일이 영상 제목·내용과 맞고 과장·거짓이 없는가", 15),

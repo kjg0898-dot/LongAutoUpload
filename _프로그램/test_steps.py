@@ -767,6 +767,73 @@ def test_fonts_and_logos():
             thumbs._STROKE.update(saved[2])
 
 
+def test_reply_comments():
+    """댓글 답글: 기본은 꺼짐 → 켜면 새 댓글마다 Claude 초안(채널 말투) → 확인 창에서 고치거나 빼고 → 달기.
+    고친 것은 기억해 다음 초안에 알려주고, 본 댓글은 다시 묻지 않음."""
+    import ai
+    import thumbs
+    from types import SimpleNamespace as NS
+    with tempfile.TemporaryDirectory() as d:
+        setup(d)
+        ui = UI()
+        thumbs.TEMPLATE_DIR = Path(d) / "틀"
+        assert core.load_config()["channels"][0]["reply"] == "끔"  # 기본은 꺼짐
+        steps.reply_comments(ui)
+        assert "켠 채널이 없습니다" in ui.logs[-1]
+        cfg = core.load_config()
+        cfg["channels"][0] |= {"reply": "확인 후 달기", "reply_voice": "따뜻한 존댓말"}
+        cfg["claude_key"] = "sk-test"
+        core.save_config(cfg)
+        comments = [{"id": "c1", "text": "정조 이야기 너무 좋네요", "author": "김씨", "likes": 3, "at": ""},
+                    {"id": "c2", "text": "광고 http://spam", "author": "봇", "likes": 0, "at": ""},
+                    {"id": "c3", "text": "다음엔 세종 이야기도 해주세요", "author": "이씨", "likes": 1, "at": ""}]
+        sent, seen_voice = [], []
+        saved = (steps.yt.fresh_public, steps.yt.new_comments, steps.yt.my_replies, steps.yt.reply, ai.client, ai.replies)
+        steps.yt.fresh_public = lambda yt, hours: [{"id": "v1", "snippet": {"title": "정조 이야기", "description": "설명"}}]
+        steps.yt.new_comments = lambda yt, vid, cid: comments
+        steps.yt.my_replies = lambda yt, cid: [{"comment": "잘 봤어요", "reply": "끝까지 봐주셔서 고맙습니다"}]
+        steps.yt.reply = lambda yt, parent, text: sent.append((parent, text))
+        ai.client = lambda key: "CL"
+
+        def drafts(cl, channel, title, desc, cs, voice):
+            seen_voice.append(voice)
+            fixed = {"c1": "정조 편 좋게 봐주셔서 감사합니다.", "c2": "", "c3": "세종 편도 준비해 보겠습니다."}
+            return {c["id"]: {"reply": fixed.get(c["id"], "편안하게 들어주셔서 고맙습니다."), "why": ""} for c in cs}
+        ai.replies = drafts
+        ui.review_replies = lambda ds: [(ds[0], "정조 편 끝까지 봐주셔서 고맙습니다. 다음 편도 기대해 주세요.")]  # 첫째는 고쳐서, 둘째는 뺌
+        try:
+            steps.reply_comments(ui)
+            assert sent == [("c1", "정조 편 끝까지 봐주셔서 고맙습니다. 다음 편도 기대해 주세요.")], sent
+            log = steps.load_reply_log(core.load_config()["channels"][0])
+            assert set(log["done"]) == {"c1", "c2", "c3"} and log["edits"][0]["draft"] == "정조 편 좋게 봐주셔서 감사합니다."
+            assert seen_voice[0]["note"] == "따뜻한 존댓말" and seen_voice[0]["mine"][0]["reply"].startswith("끝까지")
+            steps.reply_comments(ui)  # 다시 해도 이미 본 댓글은 안 묻고 안 담
+            assert len(seen_voice) == 1 and len(sent) == 1 and "새 댓글이 없습니다" in ui.logs[-1], ui.logs[-3:]
+            comments.append({"id": "c4", "text": "목소리가 편안해요", "author": "박씨", "likes": 0, "at": ""})
+            cfg = core.load_config()
+            cfg["channels"][0]["reply"] = "자동으로 달기"
+            core.save_config(cfg)
+            steps.reply_comments(ui, auto_only=True)  # 자동: 확인 창 없이
+            assert sent[-1][0] == "c4" and seen_voice[-1]["edits"][0]["final"].startswith("정조 편 끝까지")  # 고친 것을 배움
+        finally:
+            steps.yt.fresh_public, steps.yt.new_comments, steps.yt.my_replies, steps.yt.reply, ai.client, ai.replies = saved
+
+    # Claude 요청: 말투 예시·고친 기록이 들어가고, 모르는 id는 버림
+    got = []
+
+    class Msgs:
+        def create(self, **kw):
+            got.append(kw)
+            return NS(stop_reason="end_turn", content=[NS(type="text", text=json.dumps({"items": [
+                {"id": "c1", "reply": " 고맙습니다 ", "why": ""}, {"id": "zz", "reply": "엉뚱", "why": ""}]}))])
+    out = ai.replies(NS(beta=NS(messages=Msgs())), "명언", "제목", "설명", [{"id": "c1", "text": "좋아요", "author": "a"}],
+                     {"note": "짧게", "mine": [{"comment": "q", "reply": "예전 답글"}], "edits": [{"comment": "q", "draft": "초안", "final": "고친 것"}],
+                     "pinned": ["고정 댓글"]})
+    assert out == {"c1": {"reply": "고맙습니다", "why": ""}}
+    prompt = got[0]["messages"][0]["content"][0]["text"]
+    assert all(s in prompt for s in ("예전 답글", "고친 것", "짧게", "고정 댓글", "중장년", "링크"))
+
+
 def test_ai_request_and_commons_filter():
     """Claude 요청 형식(모델·구조화 출력·거절 시 다른 모델), 거절 처리, 위키미디어 저작권 거르기."""
     import io as _io

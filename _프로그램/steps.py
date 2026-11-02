@@ -389,7 +389,104 @@ def auto_all(ui):
                 return ui.log("썸네일 확인을 취소했습니다. 문구를 고친 뒤 '2. 자동 처리'를 다시 누르세요.")
     fill_all(ui)
     update_ctr(ui)
+    if any(c.get("reply", "끔") != "끔" for c in core.load_config()["channels"]):
+        reply_comments(ui)
     return bool(pin_targets(core.read_rows(), core.load_config()))
+
+
+# ---------- 댓글 답글 (채널마다 끔 / 확인 후 달기 / 자동으로 달기) ----------
+def _reply_log(ch):
+    import thumbs
+    return thumbs.template_dir(ch) / "답글기록.json"  # 틀 폴더: 청소·업데이트에 지워지지 않게
+
+
+def load_reply_log(ch):
+    f = _reply_log(ch)
+    data = json.loads(f.read_text("utf-8")) if f.exists() else {}
+    return {"done": [], "sent": [], "edits": [], "mine": [], "mine_at": ""} | data
+
+
+def save_reply_log(ch, data):
+    data["done"] = data["done"][-5000:]  # 이미 본 댓글 (답했든 건너뛰었든)
+    data["sent"], data["edits"] = data["sent"][-500:], data["edits"][-100:]
+    _reply_log(ch).parent.mkdir(parents=True, exist_ok=True)
+    _reply_log(ch).write_text(json.dumps(data, ensure_ascii=False, indent=1), "utf-8")
+
+
+def reply_comments(ui, auto_only=False):
+    """공개된 지 얼마 안 된 영상의 새 댓글에 Claude가 채널 말투로 답글 초안을 쓰고, 확인 창에서 고르거나(확인 후 달기) 바로 단다(자동).
+    말투는 말투 메모, 채널이 예전에 단 답글, 고정 댓글, 내가 초안을 고친 기록에서 배운다 (고칠수록 닮아감)."""
+    import ai
+    cfg = core.load_config()
+    chans = [c for c in cfg["channels"] if c.get("reply", "끔") != "끔" and c["channel_id"]]
+    if auto_only:
+        chans = [c for c in chans if c["reply"] == "자동으로 달기"]
+    if not chans:
+        return None if auto_only else ui.log("댓글 답글을 켠 채널이 없습니다 (설정 → 채널 → 댓글 답글).")
+    key = cfg.get("claude_key", "")
+    if not (key or os.environ.get("ANTHROPIC_API_KEY")):
+        return ui.log("댓글 답글: 설정 → 고급에 Claude API 키를 넣어야 초안을 쓸 수 있습니다.")
+    cl, before, budget, skipped = ai.client(key), len(ai.USAGE), cfg.get("reply_max_run", 60), []
+    rows = core.read_rows() if core.EXCEL.exists() else []
+    for ch in chans:
+        client = _client(ui, ch, skipped)
+        if not client:
+            continue
+        log = load_reply_log(ch)
+        if log["mine_at"][:10] != datetime.now().strftime("%Y-%m-%d"):  # 내가 예전에 단 답글: 하루 한 번만 새로 (말투 예시)
+            try:
+                log["mine"], log["mine_at"] = yt.my_replies(client, ch["channel_id"]), datetime.now().isoformat()
+            except Exception as e:
+                ui.log(f"[{ch['name']}] (예전 답글을 못 읽음: {yt.error_text(e)})")
+        voice = {"note": ch.get("reply_voice", ""), "mine": log["mine"], "edits": log["edits"],
+                 "pinned": [r["고정댓글"] for r in rows if r["채널"] == ch["name"] and r["고정댓글"].strip()][-3:]}
+        drafts = []
+        for v in yt.fresh_public(client, cfg.get("reply_hours", 48)):
+            todo = [c for c in yt.new_comments(client, v["id"], ch["channel_id"]) if c["id"] not in log["done"]]
+            todo = todo[:cfg.get("reply_per_video", 15)]
+            if not todo:
+                continue
+            out = ai.replies(cl, ch["name"], v["snippet"]["title"], v["snippet"].get("description", ""), todo, voice)
+            for c in todo:
+                text = out.get(c["id"], {}).get("reply", "")
+                if text:
+                    drafts.append({"ch": ch["name"], "video": v["snippet"]["title"], "comment": c, "draft": text,
+                                   "why": out[c["id"]]["why"]})
+                else:
+                    log["done"].append(c["id"])  # 답하지 않기로 한 댓글은 다시 묻지 않음
+        save_reply_log(ch, log)
+        if not drafts:
+            ui.log(f"[{ch['name']}] 답글을 달 새 댓글이 없습니다.")
+            continue
+        picked = ui.review_replies(drafts) if ch["reply"] == "확인 후 달기" else [(d, d["draft"]) for d in drafts]
+        if picked is None:
+            ui.log(f"[{ch['name']}] 답글 달기를 취소했습니다 (다음에 다시 보여줍니다).")
+            continue
+        sent = 0
+        for d, text in picked:
+            if budget <= 0:
+                ui.log("답글: 한 번에 달 수 있는 수(할당량 보호)를 다 써서 나머지는 다음에 답니다.")
+                break
+            try:
+                yt.reply(client, d["comment"]["id"], text.strip())
+            except Exception as e:
+                if yt.is_quota(e):
+                    raise Stop(QUOTA_MSG) from None
+                ui.log(f"  ✗ 답글: {d['comment']['text'][:30]}… — {yt.error_text(e)}")
+                continue
+            budget, sent = budget - 1, sent + 1
+            log["done"].append(d["comment"]["id"])
+            log["sent"].append({"comment": d["comment"]["text"], "reply": text.strip(), "at": datetime.now().isoformat()})
+            if text.strip() != d["draft"]:  # 내가 고친 것: 다음 초안이 이 방향을 배움
+                log["edits"].append({"comment": d["comment"]["text"], "draft": d["draft"], "final": text.strip()})
+        for d in drafts:  # 확인 창에서 뺀 것도 다시 묻지 않음
+            if d["comment"]["id"] not in log["done"] and picked is not None and all(p[0] is not d for p in picked):
+                log["done"].append(d["comment"]["id"])
+        save_reply_log(ch, log)
+        ui.log(f"[{ch['name']}] 답글 {sent}개를 달았습니다.")
+    used = ai.USAGE[before:]
+    if used:
+        ui.log(f"답글 초안 Claude 사용: 요청 {len(used)}번 → 약 ${ai.cost(used):.2f}")
 
 
 def update_ctr(ui):

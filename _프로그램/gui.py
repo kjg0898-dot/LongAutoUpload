@@ -88,7 +88,8 @@ class App:
                           ("엑셀로 열기", self.open_excel), ("작업 기록 보기", lambda: self.open_dir(core.LOG_DIR)), None,
                           ("목록(엑셀)만 다시 만들기", lambda: self.run(steps.build_excel)),
                           ("정보·댓글만 넣기", lambda: self.run(steps.fill_all)), None,
-                          ("썸네일 시험 (실제 Claude)", self.thumb_test), None,
+                          ("썸네일 시험 (실제 Claude)", self.thumb_test),
+                          ("댓글 답글 달기 (켠 채널만)", lambda: self.run(steps.reply_comments, "댓글 답글")), None,
                           ("업데이트 확인", self.update), ("청소", self.clean_window)):
             menu.add_separator() if item is None else menu.add_command(label=item[0], command=item[1])
         more["menu"] = menu
@@ -186,6 +187,7 @@ class App:
         self.refresh_status()
         root.after(100, self.poll)
         self.check_update()
+        root.after(10 * 60 * 1000, self.reply_tick)
 
     # --- 스레드에서 불러도 안전한 함수들 ---
     def log(self, msg):
@@ -284,6 +286,18 @@ class App:
     def review_titles(self, rows):
         """{파일: {'제목': …, '썸네일문구': …}} 또는 None(취소)."""
         return self._wait_window(TitleReview, rows)
+
+    def review_replies(self, drafts):
+        """답글 초안 확인: [(초안, 달 글)] 또는 None(취소)."""
+        return self._wait_window(ReplyReview, drafts)
+
+    def reply_tick(self):
+        """창이 켜져 있으면 1시간마다: '자동으로 달기'로 켠 채널의 새 댓글에 답글 (다른 작업 중이면 다음에)."""
+        if self.closing:
+            return
+        if not self.busy and any(c.get("reply") == "자동으로 달기" for c in core.load_config()["channels"]):
+            self.run(lambda app: self.steps.reply_comments(app, auto_only=True), "댓글 답글")
+        self.root.after(60 * 60 * 1000, self.reply_tick)
 
     def review_thumbs(self, rows):
         """만든 썸네일 확인. 진행이면 True."""
@@ -1043,6 +1057,47 @@ class PrepWindow:
             key, self.app.log, force), "최종 썸네일")
 
 
+class ReplyReview:
+    """댓글 답글 초안 확인: 고칠 것은 고치고, 달지 않을 것은 체크를 빼고 '선택한 답글 달기'. 고친 것은 다음 초안이 배운다."""
+
+    def __init__(self, app, drafts, done):
+        self.done = done
+        win = self.win = tk.Toplevel(app.root)
+        win.title("댓글 답글 확인")
+        win.transient(app.root)
+        win.grab_set()
+        win.protocol("WM_DELETE_WINDOW", lambda: self.finish(None))
+        ttk.Label(win, padding=(12, 10, 12, 4), text=(
+            f"[{drafts[0]['ch']}] 새 댓글 {len(drafts)}개에 대한 답글 초안 — 고칠 것은 고치고, 달지 않을 것은 체크를 빼세요.\n"
+            "고친 답글은 기억해 두었다가 다음 초안을 그 말투에 맞춥니다.")).pack(anchor="w")
+        inner = scroll_area(win)
+        self.items = []
+        for i, d in enumerate(drafts):
+            box = ttk.Frame(inner, padding=(8, 6))
+            box.grid(row=i, column=0, sticky="we")
+            on = tk.BooleanVar(value=True)
+            ttk.Checkbutton(box, variable=on).grid(row=0, column=0, rowspan=2, sticky="n")
+            ttk.Label(box, foreground=COLORS["muted"], wraplength=640, justify="left",
+                      text=f"{d['video'][:40]} · {d['comment']['author']}: {d['comment']['text'][:300]}").grid(row=0, column=1, sticky="w")
+            text = tk.Text(box, width=80, height=3, wrap="word")
+            text.insert("1.0", d["draft"])
+            text.grid(row=1, column=1, sticky="we", pady=(2, 0))
+            self.items.append((d, on, text))
+        buttons = ttk.Frame(win, padding=12)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="선택한 답글 달기 ▶", command=self.send).pack(side="right")
+        ttk.Button(buttons, text="취소", command=lambda: self.finish(None)).pack(side="right", padx=6)
+        fit(win)
+
+    def send(self):
+        self.finish([(d, text.get("1.0", "end").strip()) for d, on, text in self.items
+                     if on.get() and text.get("1.0", "end").strip()])
+
+    def finish(self, result):
+        self.win.destroy()
+        self.done(result)
+
+
 class TitleReview:
     """2. 자동 처리 중: 새 영상들의 제목(과 썸네일 자동 만들기 채널은 썸네일 문구)을 한 화면에서 고르거나 고친다."""
 
@@ -1325,6 +1380,7 @@ FIELDS = [  # 늘 보이는 칸
     ("members", "회원(멤버십) 기능 사용", "check"),
     ("playlist", "재생목록 (비우면 안 넣음, 여러 개는 쉼표로)", "entry"),
     ("thumb_auto", "썸네일 자동 만들기 (재료 사진 + 문구)", "check"),
+    ("reply", "댓글 답글 (공개 후 48시간, Claude가 채널 말투로)", list(core.REPLY_MODES)),
 ]
 ADVANCED = [  # '고급 설정'을 눌러야 보이는 칸 (보통 그대로)
     ("folder", "영상 폴더 이름 (보통 채널 이름과 같음)", "entry"),
@@ -1333,6 +1389,7 @@ ADVANCED = [  # '고급 설정'을 눌러야 보이는 칸 (보통 그대로)
     ("desc_mode", "설명 넣는 자리", core.MODES),
     ("desc_marker", "설명 기준 글자", "entry"),
     ("synthetic", "AI 변경·합성 콘텐츠 표시", [core.KEEP, "예", "아니요"]),
+    ("reply_voice", "답글 말투 메모 (예: 따뜻한 존댓말, 짧게, 역사 이야기는 덧붙여)", "entry"),
 ]
 
 

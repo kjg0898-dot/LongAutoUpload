@@ -451,7 +451,9 @@ class App:
             files = [f for p in map(Path, paths) for f in ([p] if p.is_file() else p.rglob("*"))]
             return messagebox.showinfo("넣기", "SEO 메모장(.txt)이나 그림(.jpg·.png)을 놓아주세요."
                                        + ("\n영상은 Studio에 올리면 됩니다." if any(f.suffix.lower() in core.VIDEO_EXT for f in files) else ""))
-        names = sorted({self.steps.guess_channel_name(f) for f in r["unknown_seo"]} - {""})
+        names = sorted({n for n in (self.steps.guess_channel_name(f) for f in r["unknown_seo"]
+                                    if re.search(r"seo$", f.stem.strip(), re.I))
+                        if re.search(r"[가-힣]{2}", n)})  # '○○seo.txt'처럼 한글 채널 이름이 분명한 것만 (b2d097bf 같은 건 아님)
         if names and messagebox.askyesno("새 채널", f"설정에 없는 채널의 SEO가 {len(names)}개 있어요:\n" + ", ".join(names)
                                          + "\n\n이름만 먼저 추가할까요? (로그인·공개 시간은 나중에 설정에서)"):
             for name in names:
@@ -461,13 +463,19 @@ class App:
             self.log(f"새 채널을 추가했습니다: {', '.join(names)} — 설정에서 채널마다 로그인해 주세요.")
             r = self.steps.route(paths, cfg["channels"])
         leftovers = r["unknown_seo"]
-        if leftovers and cfg["channels"]:  # 이름으로 모르는 메모장은 물어서
-            ch = self.pick_channel(f"메모장 {len(leftovers)}개 — 어느 채널 것인가요?", cfg["channels"])
+        numbered = [f for f in r["unknown_pics"] if self.steps.drop_number(f) is not None]
+        if (leftovers or numbered) and cfg["channels"]:  # 이름에 채널이 없는 것은 한 번 물어서
+            ch = self.pick_channel(f"메모장 {len(leftovers)}개 · 그림 {len(numbered)}장 — 어느 채널 것인가요?", cfg["channels"])
             if ch:
-                r["seo"].setdefault(ch["name"], []).extend(leftovers)
+                if leftovers:
+                    r["seo"].setdefault(ch["name"], []).extend(leftovers)
+                for f in numbered:
+                    r["pics"].setdefault(ch["name"], {}).setdefault(self.steps.drop_number(f), []).append(f)
+                r["unknown_pics"] = [f for f in r["unknown_pics"] if f not in numbered]
         chans = {c["name"]: c for c in cfg["channels"]}
         for name, memos in r["seo"].items():
-            self.import_seo(memos, chans[name], open_prep=False)
+            if memos:
+                self.import_seo(memos, chans[name], open_prep=False)
         off = [n for n in r["pics"] if not chans[n]["thumb_auto"]]
         if off and messagebox.askyesno("썸네일 자동 만들기", "이 채널은 '썸네일 자동 만들기'가 꺼져 있어요:\n" + ", ".join(off)
                                        + "\n\n넣은 그림으로 썸네일을 만들도록 켤까요? ('아니요'면 완성 썸네일로 넣음)"):

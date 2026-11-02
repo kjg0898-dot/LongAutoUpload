@@ -46,11 +46,15 @@ def load_template(ch):
     return tpl
 
 
-def font_path(ch, tpl):
-    """글씨체: 내가 틀 폴더에 넣은 폰트 → 틀이 정한 폰트(프로그램과 함께 오는 무료 폰트 등) → 맑은 고딕 굵게."""
-    own = sorted(p for p in template_dir(ch).glob("*") if p.suffix.lower() in (".ttf", ".otf", ".ttc"))
-    given = [template_dir(ch) / tpl["font"]] if tpl.get("font") else []
-    for p in own + given + (WINDOWS_FONTS if sys.platform == "win32" else OTHER_FONTS):
+def font_path(ch, tpl, rnd=None):
+    """글씨체: 틀 폴더에 넣은 폰트들 → 틀이 정한 폰트들(프로그램과 함께 오는 무료 폰트) → 맑은 고딕 굵게.
+    여럿이면 매번 하나를 골라 비슷하지만 조금씩 다르게."""
+    own = [p for p in sorted(template_dir(ch).glob("*")) if p.suffix.lower() in (".ttf", ".otf", ".ttc")]
+    given = [template_dir(ch) / f for f in (tpl.get("fonts") or ([tpl["font"]] if tpl.get("font") else []))]
+    for group in (own, [p for p in given if p.exists()]):
+        if group:
+            return (rnd or random).choice(group)
+    for p in WINDOWS_FONTS if sys.platform == "win32" else OTHER_FONTS:
         if p.exists():
             return p
     raise FileNotFoundError("한글 폰트를 못 찾았습니다. 썸네일틀/<채널 폴더>/ 에 폰트 파일(.ttf/.otf)을 넣어주세요.")
@@ -128,7 +132,7 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
     lines = [s.strip() for s in (text or "").replace("\\n", "/").split("/") if s.strip()]  # 비면 글자 없이 (후보 미리보기)
     if len(lines) > t["max_lines"]:
         raise ValueError(f"썸네일 문구가 {len(lines)}줄입니다 (이 채널은 {t['max_lines']}줄까지).")
-    font_file = font_path(ch, tpl)
+    font_file = font_path(ch, tpl, rnd)
     lost = missing_glyphs(ImageFont.truetype(str(font_file), 40), "".join(lines))
     if lost:
         raise ValueError(f"폰트({font_file.name})에 없는 글자가 있어 깨집니다: {' '.join(lost)} — 문구에서 빼거나 다른 폰트를 쓰세요.")

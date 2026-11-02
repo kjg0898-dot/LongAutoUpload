@@ -145,7 +145,7 @@ def status_summary(rows, cfg):
     elif core.MEMBER_TODO in states:
         nxt = "Studio에서 회원 전용 + 공개 예약 직접 설정 (엑셀 상태 '회원 설정 필요'인 영상) → 끝나면 다음 묶음"
     else:
-        nxt = "1. 영상 준비 (폴더에 SEO·썸네일, 영상은 Studio에 업로드) → 2. 자동 처리"
+        nxt = "1. 준비 (SEO 넣기 → 썸네일 넣기, 영상은 Studio에 업로드) → 2. 자동 처리"
     return ("\n".join(lines) or "진행 중인 영상 없음") + f"\n▶ 다음 할 일: {nxt}"
 
 
@@ -156,7 +156,7 @@ def card_status(rows, has_videos=False):
     errors = sum(1 for r in rows if r["오류"])
     member, left = c[core.MEMBER_TODO], c[""] + c["정보완료"]
     text = {
-        "1": f"이번 묶음 영상 {len(rows)}개" if rows else "폴더에 SEO·썸네일 넣고, 영상은 Studio에 업로드",
+        "1": f"이번 묶음 영상 {len(rows)}개" if rows else "SEO 넣기 → 작업표 보고 썸네일 만들기 → 썸네일 넣기\n영상은 Studio에 업로드",
         "2": (f"남은 {left}개" if left else "완료" if rows else "목록 → 제목 확인 → 제목·설명·썸네일·댓글")
              + (f" · 오류 {errors}" if errors else ""),
         "3": f"고정할 영상 {c['댓글완료']}개" if c["댓글완료"] else "탭을 열어 댓글 고정 (직접)",
@@ -359,10 +359,15 @@ def auto_all(ui):
     build_excel(ui)
     rows = core.read_rows()
     new = [r for r in rows if r["상태"] == ""]
-    if new and not ui.ask(f"새 영상 {len(new)}개의 제목은 SEO 추천 1순위로 넣습니다. 이대로 진행할까요?\n\n"
-                          + "\n".join(f"- {r['제목']}" for r in new[:10]) + ("\n…" if len(new) > 10 else "")
-                          + "\n\n('아니요' → 목록에서 더블클릭해 고친 뒤 다시 누르세요)"):
-        return ui.log("제목을 고친 뒤 '2. 자동 처리'를 다시 누르세요.")
+    if new:  # 썸네일을 보며 제목을 고르는 창 (기본: 지금 제목 = SEO 추천 1순위)
+        titles = ui.review_titles(new)
+        if titles is None:
+            return ui.log("제목 확인을 취소했습니다. '2. 자동 처리'를 다시 누르면 이어서 합니다.")
+        changed = [r for r in rows if titles.get(r["파일"], r["제목"]) != r["제목"]]
+        for r in changed:
+            r["제목"] = titles[r["파일"]]
+        if changed:
+            _save(ui, rows)
     fill_all(ui)
     return bool(pin_targets(core.read_rows(), core.load_config()))
 

@@ -182,12 +182,18 @@ def parse_seo(text):
         rec = re.search(r"추천\s*1순위:\s*(\d+)", find("제목"))
         pick = int(rec[1]) - 1 if rec and 0 < int(rec[1]) <= len(titles) else 0
         desc = find("설명")
+        thumb_texts = re.findall(r"^\s*\d+\.\s*(.+?)\s*$", find("썸네일 문구"), re.M)
+        rec_t = re.search(r"추천\s*1순위:\s*(\d+)", find("썸네일 문구"))
+        prompt = re.search(r"^\s*추천 프롬프트:\s*(.+)$", "\n".join(sections.values()), re.M)
         out.append({"num": num, "orig": orig, "titles": titles, "title": titles[pick] if titles else orig,
-                    "desc": desc, "tags": "", "comment": find("고정")})  # 해시태그는 설명에만
+                    "desc": desc, "tags": "", "comment": find("고정"),  # 해시태그는 설명에만
+                    "title_pick": pick, "thumb_texts": thumb_texts,
+                    "thumb_pick": int(rec_t[1]) - 1 if rec_t and 0 < int(rec_t[1]) <= len(thumb_texts) else 0,
+                    "thumb_prompt": prompt[1].strip() if prompt else ""})
     return out
 
 
-SKIP_TXT = re.compile(r"대본|스크립트|script|자막|나레이션|내레이션|프롬프트|prompt", re.I)
+SKIP_TXT = re.compile(r"대본|스크립트|script|자막|나레이션|내레이션|프롬프트|prompt|작업표", re.I)
 
 
 def load_entries(memo_paths):
@@ -373,6 +379,54 @@ def channel_dirs(ch):
     return sorted((b / ch["folder"] for b in VIDEO_DIR.iterdir() if (b / ch["folder"]).is_dir()), key=natural_key)
 
 
+def _has_memo(folder):
+    return bool(load_entries(p for p in Path(folder).rglob("*.txt")))
+
+
+def seo_folder(ch, today=None):
+    """SEO를 넣을 채널 폴더: 마지막 묶음에 아직 메모장이 없으면 거기, 있으면 오늘 날짜로 새 묶음."""
+    dirs = channel_dirs(ch)
+    if dirs and not _has_memo(dirs[-1]):
+        return dirs[-1]
+    name, n = (today or datetime.now(KST)).strftime("%Y-%m-%d"), 2
+    folder = VIDEO_DIR / name / ch["folder"]
+    while folder.exists() and _has_memo(folder):
+        folder, n = VIDEO_DIR / f"{name}-{n}" / ch["folder"], n + 1
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def worksheet_text(entries):
+    """작업표: 썸네일을 만들 때 볼 것만 (제목 후보, 썸네일 문구, 그림 프롬프트, 저장 이름)."""
+    out = ["작업표 — 썸네일 만들 때 보는 정리본 (프로그램이 만든 파일이라 고쳐도 반영되지 않습니다)",
+           "· 썸네일은 이름에 순번 숫자를 넣어 저장하세요. 예) 1.png, 3번 썸네일.jpg (jpg·png, 2MB 이하)",
+           "· 제목은 '2. 자동 처리'를 누르면 썸네일을 보면서 고를 수 있습니다.", ""]
+    for e in sorted(entries, key=lambda e: e["num"] if e["num"] is not None else 0):
+        out += ["", f"==================== 순번 {e['num']} ====================", "제목 후보 (▶ 추천)"]
+        out += [f" {'▶' if i == e.get('title_pick', 0) else ' '} {i + 1}. {t}" for i, t in enumerate(e["titles"])] or [f"   {e['title']}"]
+        if e.get("thumb_texts"):
+            out += ["썸네일 문구 (▶ 추천)"]
+            out += [f" {'▶' if i == e['thumb_pick'] else ' '} {i + 1}. {t}" for i, t in enumerate(e["thumb_texts"])]
+        if e.get("thumb_prompt"):
+            out += ["썸네일 그림 프롬프트", f"   {e['thumb_prompt']}"]
+        out += [f"썸네일 저장 이름: {e['num']}.png"]
+    return "\n".join(out) + "\n"
+
+
+def import_seo(ch, paths):
+    """SEO 메모장들을 이 채널의 폴더에 넣고 작업표를 만든다. (폴더, 작업표 경로)"""
+    entries = load_entries(paths)
+    if not entries or any(e["num"] is None for e in entries):
+        raise ValueError("SEO 형식 메모장이 아닙니다 ('[날짜] 행 N | 순번 N | 제목: …' 줄이 있는 파일을 골라주세요).")
+    folder = seo_folder(ch)
+    for p in map(Path, paths):
+        if p.resolve().parent != folder.resolve():
+            shutil.copy2(p, folder / p.name)
+    sheet = folder / f"작업표_{ch['folder']}.txt"
+    sheet.write_text(worksheet_text(load_entries(folder.rglob("*.txt"))), "utf-8")
+    return folder, sheet
+
+
 def new_batch(cfg, today=None):
     """영상/<오늘 날짜>/<채널 폴더들> 을 만든다. 같은 날 또 만들면 -2, -3 …"""
     name = (today or datetime.now(KST)).strftime("%Y-%m-%d")
@@ -475,11 +529,12 @@ def build_rows(cfg, old_rows, drafts=None, uploaded=None):
     rows, problems, seen = [], [], set()
     for ch in cfg["channels"]:
         dirs = channel_dirs(ch)
-        mine = {n: v for n, v in (drafts or {}).get(ch["name"], {}).items()
-                if dirs and taken.get(v, rel(dirs[-1] / n)) == rel(dirs[-1] / n)}
+        mine = (drafts or {}).get(ch["name"], {})
         for folder in dirs:
             batch_rows = []
-            for video, entry, thumb in scan_channel(folder, mine if folder == dirs[-1] else ()):
+            own = {n: v for n, v in mine.items()
+                   if taken.get(v) == rel(folder / n) or (folder == dirs[-1] and v not in taken)}
+            for video, entry, thumb in scan_channel(folder, own):
                 name = rel(video)
                 seen.add(name)
                 info = entry or {}
@@ -488,7 +543,7 @@ def build_rows(cfg, old_rows, drafts=None, uploaded=None):
                          "메모장": rel(info.get("src")), "썸네일": rel(thumb)}
                 row = old.get(name) or dict.fromkeys(COLUMNS, "") | {"채널": ch["name"], "파일": name}
                 if not row["영상ID"] and not video.exists():
-                    row["영상ID"] = mine[video.name]  # 폴더에 없는 영상 = Studio 초안
+                    row["영상ID"] = own[video.name]  # 폴더에 없는 영상 = Studio 초안
                 if row["상태"] == "":
                     keep_thumb = row["썸네일"] == "없음"  # 썸네일 없이 올리기로 한 영상
                     row |= fresh | ({"썸네일": "없음"} if keep_thumb else {})

@@ -92,7 +92,8 @@ def test_seo():
     a, b = core.parse_seo(SEO.replace("\n", "\r\n"))
     assert a == {"num": 1, "orig": "원본 제목 하나", "titles": ["첫째 후보", "둘째 후보", "셋째 후보"],
                  "title": "둘째 후보", "desc": "설명 본문입니다.\n\n참고자료\n· 책\n\n#역사 #동양사",
-                 "tags": "", "comment": "고마워요 ❤️\n둘째 줄"}, a
+                 "tags": "", "comment": "고마워요 ❤️\n둘째 줄",
+                 "title_pick": 1, "thumb_texts": ["문구"], "thumb_pick": 0, "thumb_prompt": ""}, a
     assert (b["num"], b["title"], b["comment"], b["tags"]) == (2, "두 번째 영상 제목", "둘째 댓글", "")
     assert core.parse_seo("제목: 일반 메모장") == []
 
@@ -349,6 +350,50 @@ def test_seo_format_with_thumbnail_and_prompt_sections():
         [e] = core.load_entries([f])
     assert e["num"] == 3 and e["title"] == "둘째 제목" and e["titles"] == ["첫째 제목", "둘째 제목", "셋째 제목"], e
     assert e["desc"] == "설명 본문입니다.\n\n#역사 #전쟁사" and e["comment"] == "고정 댓글 첫 줄 ❤️\n둘째 줄", e
+
+
+def test_import_seo_and_worksheet():
+    seo = """[2026-10-21 19:24] 행 4 | 순번 3 | 제목: 원본
+---
+제목 (3안)
+1. 첫째 제목
+2. 둘째 제목
+추천 1순위: 2 — 이유
+---
+썸네일 문구 (3안)
+1. 문구 하나
+2. 문구 둘
+추천 1순위: 1 — 이유
+---
+설명글 & 해시태그
+설명
+---
+고정 댓글
+댓글
+---
+썸네일
+추천 프롬프트: 16 대 9 사막 장면
+"""
+    with tempfile.TemporaryDirectory() as d:
+        core.VIDEO_DIR = Path(d) / "영상"
+        ch = {**core.DEFAULT_CHANNEL, "name": "역사", "folder": "역사"}
+        src = Path(d) / "받은 seo.txt"
+        src.write_text(seo, "utf-8")
+        folder, sheet = core.import_seo(ch, [src])
+        today = datetime.now(KST).strftime("%Y-%m-%d")
+        assert folder == core.VIDEO_DIR / today / "역사" and (folder / "받은 seo.txt").exists()
+        text = sheet.read_text("utf-8")
+        assert " ▶ 2. 둘째 제목" in text and " ▶ 1. 문구 하나" in text and "16 대 9 사막 장면" in text, text
+        assert "썸네일 저장 이름: 3.png" in text
+        assert [e["num"] for e in core.load_entries(folder.rglob("*.txt"))] == [3]  # 작업표는 메모장으로 안 읽음
+        folder2, _ = core.import_seo(ch, [src])  # 이미 메모장이 있는 묶음 → 새 묶음
+        assert folder2 == core.VIDEO_DIR / f"{today}-2" / "역사"
+        (Path(d) / "대충.txt").write_text("그냥 메모", "utf-8")
+        try:
+            core.import_seo(ch, [Path(d) / "대충.txt"])
+            raise AssertionError("SEO가 아닌 파일을 받음")
+        except ValueError as e:
+            assert "SEO" in str(e)
 
 
 def test_playlist_ids():

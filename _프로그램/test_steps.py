@@ -97,6 +97,10 @@ class UI:
         self.asked.append(q)
         return self.answer(q) if callable(self.answer) else self.answer
 
+    def review_titles(self, rows):
+        self.reviewed = [r["제목"] for r in rows]
+        return None if self.answer is False else {r["파일"]: r["제목"] for r in rows} | getattr(self, "retitle", {})
+
 
 def setup(d):
     core.VIDEO_DIR, core.DONE_DIR = Path(d) / "영상", Path(d) / "완료"
@@ -399,11 +403,14 @@ def test_auto_all_and_no_title_template():
     with tempfile.TemporaryDirectory() as d:
         fake, ui = setup(d), UI()
         fake.videos_db["vid0"]["snippet"]["title"] = "1"
+        ui.retitle = {"b/명언/3.mp4": "썸네일 보고 고른 제목"}
         assert steps.auto_all(ui) is True  # 고정할 댓글이 있으니 고정 창을 띄움
-        assert len(ui.asked) == 1 and "명언 1" in ui.asked[0]
+        assert ui.reviewed == ["명언 1", "명언 2", "명언 3"] and not ui.asked
         assert [r["상태"] for r in core.read_rows()] == ["댓글완료"] * 3
+        assert core.read_rows()[2]["제목"] == "썸네일 보고 고른 제목"
         assert fake.videos_db["vid0"]["snippet"]["title"] == "명언 1"
         assert fake.videos_db["vid1"]["snippet"]["title"].startswith("[숨겨진 동양사] 명언 2 l")
+        assert fake.videos_db["vid2"]["snippet"]["title"].startswith("[숨겨진 동양사] 썸네일 보고 고른 제목 l")
     with tempfile.TemporaryDirectory() as d:
         fake, ui = setup(d), UI()
         ui.answer = False  # 제목을 고치겠다고 하면 2단계는 하지 않는다

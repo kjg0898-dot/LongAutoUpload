@@ -1356,6 +1356,7 @@ class Settings:
         form.pack(side="left", fill="both", expand=True)
         self.login_label = ttk.Label(form, foreground="#555")
         self.login_label.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        self.login_label.bind("<Button-1>", lambda e: self.open_channel())  # 로그인한 채널이 맞는지 YouTube에서 확인
         self.vars = {}
 
         def field(parent, row, key, label, kind):
@@ -1441,8 +1442,15 @@ class Settings:
         for key, var in self.vars.items():
             var.set(ch[key])
         self.saved = saved
-        self.login_label.config(text=f"로그인됨: YouTube 채널 '{ch['channel_title']}'" if ch["channel_id"]
-                                else "로그인 안 됨 — 왼쪽 '로그인'을 눌러주세요")
+        self.login_label.config(text=f"로그인됨: YouTube 채널 '{ch['channel_title']}' ({ch['channel_id']}) — 눌러서 채널 페이지 확인"
+                                if ch["channel_id"] else "로그인 안 됨 — 왼쪽 '로그인'을 눌러주세요",
+                                cursor="hand2" if ch["channel_id"] else "")
+
+    def open_channel(self):
+        import webbrowser
+        ch = self.cfg["channels"][self.cur] if self.cur is not None and self.cur < len(self.cfg["channels"]) else None
+        if ch and ch["channel_id"]:
+            webbrowser.open(f"https://www.youtube.com/channel/{ch['channel_id']}")
 
     def add(self):
         self.commit()

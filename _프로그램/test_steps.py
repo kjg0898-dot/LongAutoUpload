@@ -524,7 +524,7 @@ def test_auto_thumbnails_with_claude():
     saved = (ai.client, ai.plan, ai.find_photo, ai.queries)
     ai.client = lambda key: calls.append(("client", key)) or "CL"
     ai.queries = lambda cl, title, desc, text: calls.append(("queries", title)) or ["Seoul 1950"]
-    ai.plan = lambda cl, base, text, title, desc, sides: calls.append(("plan", text)) or {
+    ai.plan = lambda cl, base, text, title, desc, sides, spots=(): calls.append(("plan", text)) or {
         "side": "right", "accents": ["명언"], "queries": []}
     ai.find_photo = lambda cl, queries, text, title, log, skip=(): calls.append(("photo", queries)) or (
         Image.new("RGB", (800, 600), "red"), "File:Seoul.jpg")

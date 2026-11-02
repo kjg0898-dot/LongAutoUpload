@@ -70,20 +70,44 @@ def _schema(props, required=None):
     return {"type": "object", "properties": props, "required": required or list(props), "additionalProperties": False}
 
 
-def plan(cl, base, text, title, desc, sides, spots=()):
-    """글자를 둘 쪽, 다른 색으로 강조할 말, 실제 사진 검색어, (자리가 여럿이면) 실제 사진을 놓을 자리."""
-    spot_text = ("\n4) spot: 실제 사진을 놓을 자리 번호. 배경 속 사람 얼굴이나 핵심 대상을 가리지 않는 곳으로. 자리(1280x720 기준 x,y,너비,높이): "
-                 + ", ".join(f"{i}번 {s}" for i, s in enumerate(spots))) if len(spots) > 1 else ""
-    content = [image_block(base), {"type": "text", "text": (
-        "유튜브 썸네일을 만듭니다. 첨부한 사진이 배경이고, 그 위에 아래 문구를 크게 넣습니다.\n"
-        f"문구 (/ 는 줄바꿈): {text}\n영상 제목: {title}\n영상 설명: {desc[:600]}\n\n"
-        f"1) side: 문구를 둘 쪽 ({' 또는 '.join(sides)}). 사진 속 사람 얼굴이나 핵심 대상을 가리지 않는 쪽.\n"
-        "2) accents: 문구에서 다른 색으로 강조할 핵심 말 1~2개. 문구에 있는 글자 그대로 (띄어쓰기 포함).\n"
-        "3) queries: 위키미디어 공용(Wikimedia Commons)에서 이 영상 주제의 실제 사진·기록·지도·유물을 찾을 영어 검색어 3개. "
-        "구체적인 인물·사건·장소·물건 이름으로, 각각 2~4단어로 짧게." + spot_text)}]
-    props = {"side": {"type": "string", "enum": list(sides)}, "accents": {"type": "array", "items": {"type": "string"}},
+def plan(cl, base, text, title, desc, opts, recent=()):
+    """이번 편의 디자인: 글자 자리·줄 나눔·강조할 말·색 조합·글씨체·크기·실제 사진 자리·검색어.
+    opts: thumbs.options()가 만든 고를 거리, recent: 같은 채널에서 최근 쓴 조합 (되풀이하지 않게)."""
+    layouts, fonts, styles, spots = opts.get("layouts", []), opts.get("fonts", []), opts.get("styles", []), opts.get("spots", [])
+    ask_text = [
+        "유튜브 썸네일을 만듭니다. 첨부한 사진이 배경이고, 그 위에 아래 문구를 크게 넣습니다. "
+        "썸네일은 영상 클릭을 정하는 가장 중요한 요소입니다. 이 사진과 문구에 가장 잘 맞게, 그리고 이 채널의 다른 편과 너무 똑같지 않게 정해주세요.",
+        f"문구 (/ 는 줄바꿈): {text}\n영상 제목: {title}\n영상 설명: {desc[:600]}\n",
+        "lines: 문구를 몇 줄로 어디서 나눌지 (1~%d줄). 글자는 문구 그대로, 띄어쓰기만 바꿔 나눔. 의미가 끊기지 않게, 줄 길이가 비슷하게." % opts.get("max_lines", 2),
+        "accents: 다른 색으로 강조할 핵심 말 1~2개 (숫자·인물·반전 같은 궁금증을 만드는 말). 문구에 있는 글자 그대로."]
+    props = {"lines": {"type": "array", "items": {"type": "string"}}, "accents": {"type": "array", "items": {"type": "string"}},
              "queries": {"type": "array", "items": {"type": "string"}}}
-    out = ask(cl, content, _schema(props | ({"spot": {"type": "integer"}} if spot_text else {})))
+    if layouts:
+        ask_text.append("layout: 문구를 놓을 자리. 사진 속 사람 얼굴이나 핵심 대상을 가리지 않는 곳. "
+                        + "; ".join(f"{n} = {d}" for n, d in layouts))
+        props["layout"] = {"type": "string", "enum": [n for n, _ in layouts]}
+    else:
+        ask_text.append(f"side: 문구를 둘 쪽 ({' 또는 '.join(opts['sides'])}). 사진 속 사람 얼굴이나 핵심 대상을 가리지 않는 쪽.")
+        props["side"] = {"type": "string", "enum": list(opts["sides"])}
+    if len(styles) > 1:
+        ask_text.append("style: 글자 색 조합 번호. " + "; ".join(f"{i}번 {s}" for i, s in enumerate(styles)) + ". 배경 색과 잘 대비되는 것.")
+        props["style"] = {"type": "integer"}
+    if len(fonts) > 1:
+        ask_text.append("font: 글씨체 (" + ", ".join(fonts) + "). 주제 분위기에 맞게.")
+        props["font"] = {"type": "string", "enum": list(fonts)}
+    ask_text.append("size: 글자 크기 배율 0.85~1.1 (문구가 짧고 강할수록 크게, 배경이 복잡하면 조금 작게).")
+    props["size"] = {"type": "number"}
+    if len(spots) > 1:
+        ask_text.append("spot: 실제 사진을 놓을 자리 번호. 문구 자리와 겹치지 않고 배경 속 얼굴·핵심 대상을 가리지 않는 곳. 자리(1280x720 기준 x,y,너비,높이): "
+                        + ", ".join(f"{i}번 {s}" for i, s in enumerate(spots)))
+        props["spot"] = {"type": "integer"}
+    ask_text.append("queries: 위키미디어 공용(Wikimedia Commons)에서 이 영상 주제의 실제 사진·기록·지도·유물을 찾을 영어 검색어 3개. "
+                    "구체적인 인물·사건·장소·물건 이름으로, 각각 2~4단어로 짧게.")
+    if recent:
+        ask_text.append("이 채널에서 최근 만든 썸네일들의 조합 (같은 조합을 되풀이하지 말고 자리·색·글씨체 중 둘 이상은 다르게. "
+                        "단 이 사진에 안 맞으면 억지로 바꾸지 말 것): "
+                        + " / ".join(json.dumps(r, ensure_ascii=False) for r in recent))
+    out = ask(cl, [image_block(base), {"type": "text", "text": "\n".join(ask_text)}], _schema(props))
     out["accents"] = [a for a in out.get("accents", []) if a.strip() and a.strip() in text]  # 문구에 없는 말은 버림
     return out
 
@@ -120,9 +144,12 @@ def score(cl, img, title, text, desc, examples=(), checks=()):
         "1) policy_ok: YouTube 정책상 문제가 없는가 (피·상처·시신이 드러남, 극단주의 상징이 중심, 선정성, 욕설, 영상에 없는 약속이면 false). "
         "policy_reason: false면 이유.\n"
         "2) 항목별 점수 (0~배점): " + ", ".join(f"{k} = {d} (0~{w})" for k, d, w in RUBRIC) + "\n"
-        "3) tips: 고치면 좋은 점 1~3개, 짧은 한국어로. 이미 좋으면 빈 목록.")})
+        "3) tips: 고치면 좋은 점 1~3개, 짧은 한국어로. 이미 좋으면 빈 목록.\n"
+        "4) title_score: 영상 제목만 따로 0~100점 (검색·추천에서 눌러보고 싶은가: 앞 40자 안에 핵심 말, 구체적인 숫자·인물·사건, "
+        "궁금증, 과장·낚시 없음, 썸네일 문구와 겹치지 않고 서로 보완). title_tips: 제목을 고치면 좋은 점 0~2개, 짧은 한국어로.")})
     props = {"policy_ok": {"type": "boolean"}, "policy_reason": {"type": "string"},
-             "tips": {"type": "array", "items": {"type": "string"}}}
+             "tips": {"type": "array", "items": {"type": "string"}},
+             "title_score": {"type": "integer"}, "title_tips": {"type": "array", "items": {"type": "string"}}}
     props |= {k: {"type": "integer"} for k, _, _ in RUBRIC}
     out = ask(cl, content, _schema(props))
     out["total"] = sum(max(0, min(w, int(out.get(k, 0)))) for k, _, w in RUBRIC) if out.get("policy_ok", True) else 0

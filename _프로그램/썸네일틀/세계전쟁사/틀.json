@@ -1,85 +1,140 @@
 {
-  "_설명": "세계전쟁사 채널 썸네일 틀 (채널의 최근 썸네일 10개를 보고 만듦): 노란 테두리, 아래 가운데 두 줄(흰색·노랑, 강조는 빨강), 위쪽에 실제 사진(테두리 없음), 왼쪽 위 채널 마크",
-  "text": {
-    "box": [
-      30,
-      392,
-      1220,
-      290
-    ],
-    "valign": "bottom",
-    "size_max": 132,
-    "size_min": 64,
-    "max_lines": 2,
-    "stroke": 12,
-    "line_gap": 0.02,
-    "sides": [
-      "center"
-    ],
-    "glow": 8
-  },
-  "styles": [
-    {
-      "line_fills": [
-        "#FFFFFF",
-        "#FFEB00"
-      ],
-      "accent": "#FF3B2F",
-      "stroke": "#000000"
-    },
-    {
-      "line_fills": [
-        "#FFFFFF",
-        "#FFEB00"
-      ],
-      "accent": "#FFEB00",
-      "stroke": "#000000"
-    }
+ "_설명": "세계전쟁사 채널 썸네일 틀 (채널의 최근 썸네일 10개를 보고 만듦): 노란 테두리, 아래 가운데 두 줄(흰색·노랑, 강조는 빨강), 위쪽에 실제 사진(테두리 없음), 왼쪽 위 채널 마크",
+ "text": {
+  "box": [
+   30,
+   392,
+   1220,
+   290
   ],
-  "shade": 0.55,
-  "shade_dir": "bottom",
-  "inset": {
-    "boxes": [
-      [
-        720,
-        10,
-        550,
-        380
-      ],
-      [
-        560,
-        10,
-        600,
-        360
-      ],
-      [
-        470,
-        10,
-        790,
-        350
-      ]
-    ],
-    "border": 0,
-    "tilt": 0,
-    "shadow": false
+  "valign": "bottom",
+  "size_max": 132,
+  "size_min": 64,
+  "max_lines": 2,
+  "stroke": 12,
+  "line_gap": 0.02,
+  "sides": [
+   "center"
+  ],
+  "glow": 8
+ },
+ "styles": [
+  {
+   "line_fills": [
+    "#FFFFFF",
+    "#FFEB00"
+   ],
+   "accent": "#FF3B2F",
+   "stroke": "#000000",
+   "_설명": "첫 줄 흰색·둘째 줄 노랑, 강조 빨강"
   },
-  "logo": {
-    "file": "로고.png",
-    "pos": [
-      12,
-      7
-    ],
-    "width": 0
+  {
+   "line_fills": [
+    "#FFFFFF",
+    "#FFEB00"
+   ],
+   "accent": "#FFEB00",
+   "stroke": "#000000",
+   "_설명": "첫 줄 흰색·둘째 줄 노랑, 강조 노랑"
+  }
+ ],
+ "shade": 0.55,
+ "shade_dir": "bottom",
+ "inset": {
+  "boxes": [
+   [
+    720,
+    10,
+    550,
+    380
+   ],
+   [
+    560,
+    10,
+    600,
+    360
+   ],
+   [
+    470,
+    10,
+    790,
+    350
+   ]
+  ],
+  "border": 0,
+  "tilt": 0,
+  "shadow": false
+ },
+ "logo": {
+  "file": "로고.png",
+  "pos": [
+   12,
+   7
+  ],
+  "width": 0
+ },
+ "border": {
+  "width": 10,
+  "color": "#FFEB00"
+ },
+ "jitter": 0.02,
+ "_폰트": "매번 이 중 하나 (비슷한 굵은 글씨체를 조금씩 바꿔 씀). 이 폴더에 폰트 파일을 넣으면 넣은 것들 중에서 고름",
+ "fonts": [
+  "../../폰트/Jua-Regular.ttf",
+  "../../폰트/Jua-Regular.ttf",
+  "../../폰트/BlackHanSans-Regular.ttf"
+ ],
+ "layouts": [
+  {
+   "name": "아래_가운데",
+   "_설명": "아래쪽 가운데 큰 글씨 (이 채널에서 가장 많이 씀). 배경 주인공이 위쪽에 있을 때",
+   "box": [
+    30,
+    380,
+    1220,
+    280
+   ],
+   "align": "center",
+   "valign": "bottom",
+   "spots": [
+    0,
+    1,
+    2
+   ],
+   "shade": "bottom",
+   "weight": 6
   },
-  "border": {
-    "width": 10,
-    "color": "#FFEB00"
+  {
+   "name": "오른쪽_위",
+   "_설명": "오른쪽 위 글씨. 배경 주인공이 왼쪽·아래에 있을 때",
+   "box": [
+    480,
+    50,
+    770,
+    350
+   ],
+   "align": "right",
+   "valign": "top",
+   "spots": [],
+   "shade": "top",
+   "weight": 2
   },
-  "jitter": 0.02,
-  "_폰트": "매번 이 중 하나 (비슷한 굵은 글씨체를 조금씩 바꿔 씀). 이 폴더에 폰트 파일을 넣으면 넣은 것들 중에서 고름",
-  "fonts": [
-    "../../폰트/Jua-Regular.ttf",
-    "../../폰트/Jua-Regular.ttf",
-    "../../폰트/BlackHanSans-Regular.ttf"
-  ]
+  {
+   "name": "왼쪽_아래",
+   "_설명": "왼쪽 아래 글씨. 배경 주인공이 오른쪽에 있을 때",
+   "box": [
+    30,
+    370,
+    820,
+    290
+   ],
+   "align": "left",
+   "valign": "bottom",
+   "spots": [
+    0
+   ],
+   "shade": "bottom",
+   "weight": 2
+  }
+ ]
 }

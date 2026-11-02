@@ -524,7 +524,7 @@ def test_auto_thumbnails_with_claude():
     saved = (ai.client, ai.plan, ai.find_photo, ai.queries)
     ai.client = lambda key: calls.append(("client", key)) or "CL"
     ai.queries = lambda cl, title, desc, text: calls.append(("queries", title)) or ["Seoul 1950"]
-    ai.plan = lambda cl, base, text, title, desc, sides, spots=(): calls.append(("plan", text)) or {
+    ai.plan = lambda cl, base, text, title, desc, opts, recent=(): calls.append(("plan", text)) or {
         "side": "right", "accents": ["명언"], "queries": []}
     ai.find_photo = lambda cl, queries, text, title, log, skip=(): calls.append(("photo", queries)) or (
         Image.new("RGB", (800, 600), "red"), "File:Seoul.jpg")
@@ -553,6 +553,34 @@ def test_auto_thumbnails_with_claude():
         ai.client, ai.plan, ai.find_photo, ai.queries = saved
 
 
+def test_thumbnail_variety():
+    """매 편 다르게: 틀에 글자 자리가 여럿이면 Claude 없이도 앞서 쓴 자리를 피하고, Claude가 고른 자리·줄·색·크기를 그대로 쓴다."""
+    import random
+    import thumbs
+    from PIL import Image
+    with tempfile.TemporaryDirectory() as d:
+        thumbs.TEMPLATE_DIR = Path(d) / "틀"
+        folder = thumbs.TEMPLATE_DIR / "v"
+        folder.mkdir(parents=True)
+        tpl = json.loads((Path(__file__).parent / "썸네일틀" / "세계전쟁사" / "틀.json").read_text("utf-8"))
+        tpl["fonts"] = [str(Path(__file__).parent / "폰트" / "Jua-Regular.ttf"), str(Path(__file__).parent / "폰트" / "BlackHanSans-Regular.ttf")]
+        (folder / "틀.json").write_text(json.dumps(tpl, ensure_ascii=False), "utf-8")
+        base, photo = Image.new("RGB", (1280, 720), "#335"), Image.new("RGB", (800, 600), "red")
+        names, ch = {x["name"] for x in tpl["layouts"]}, {"folder": "v"}
+        for i in range(6):  # 앞서 쓴 자리를 피하면 연달아 같은 자리가 나오지 않음
+            first = thumbs.compose(ch, base, "명언 하나 / 둘째 줄", None, photo, random.Random(i)).info["layout"]["name"]
+            again = thumbs.compose(ch, base, "명언 하나 / 둘째 줄", {"avoid": [first]}, photo, random.Random(i)).info["layout"]["name"]
+            assert first in names and again != first, (first, again)
+        out = thumbs.compose(ch, base, "적군은 왜 백기를 들었나", {"layout": "오른쪽_위", "lines": ["적군은 왜", "백기를 들었나"],
+                             "style": 1, "font": "BlackHanSans-Regular.ttf", "size": 0.9}, photo, random.Random(0))
+        lay = out.info["layout"]
+        assert lay["name"] == "오른쪽_위" and lay["lines"] == ["적군은 왜", "백기를 들었나"] and lay["style"] == 1
+        assert lay["font"] == "BlackHanSans-Regular.ttf" and min(b[0] for b in lay["boxes"]) >= 500  # 오른쪽 자리
+        assert out.convert("RGB").getpixel((180, 200))[0] < 200  # 이 자리는 실제 사진을 넣지 않음
+        bad = thumbs.compose(ch, base, "적군은 왜 백기를", {"lines": ["적군은", "다른 말"]}, None, random.Random(0)).info["layout"]
+        assert "다른 말" not in bad["lines"]  # 글자를 바꾼 줄 나눔은 버림
+
+
 def test_ai_request_and_commons_filter():
     """Claude 요청 형식(모델·구조화 출력·거절 시 다른 모델), 거절 처리, 위키미디어 저작권 거르기."""
     import io as _io
@@ -569,9 +597,16 @@ def test_ai_request_and_commons_filter():
             sent.append(kw)
             return NS(stop_reason=self.stop, content=[NS(type="thinking"), NS(type="text", text=self.reply)])
     cl = NS(beta=NS(messages=Msgs('{"side": "left", "accents": ["백기", "없는말"], "queries": ["MRE Gulf War"]}')))
-    out = ai.plan(cl, Image.new("RGB", (100, 60)), "미군은 버린 봉지 / 적군은 백기", "제목", "설명", ["left", "right"])
+    out = ai.plan(cl, Image.new("RGB", (100, 60)), "미군은 버린 봉지 / 적군은 백기", "제목", "설명", {"sides": ["left", "right"]})
     assert out == {"side": "left", "accents": ["백기"], "queries": ["MRE Gulf War"]}, out  # 문구에 없는 말은 버림
     kw = sent[-1]
+    ai.plan(cl, Image.new("RGB", (100, 60)), "문구", "제목", "설명",
+            {"layouts": [("아래", "아래쪽"), ("위", "위쪽")], "fonts": ["A.ttf", "B.ttf"], "styles": ["흰색", "노랑"], "spots": [[0, 0, 1, 1]]},
+            [{"layout": "아래", "font": "A.ttf", "style": 0}])
+    props = sent[-1]["output_config"]["format"]["schema"]["properties"]
+    assert props["layout"]["enum"] == ["아래", "위"] and props["font"]["enum"] == ["A.ttf", "B.ttf"] and "style" in props
+    assert "side" not in props and "spot" not in props  # 사진 자리가 하나면 묻지 않음
+    assert '"layout": "아래"' in sent[-1]["messages"][0]["content"][1]["text"]  # 최근 조합을 알려 되풀이를 피함
     assert kw["model"] == "claude-opus-5-5" and kw["fallbacks"] == "default" and kw["betas"] == ["server-side-fallback-2026-07-01"]
     assert kw["output_config"]["format"]["type"] == "json_schema" and kw["output_config"]["effort"] == "medium"
     assert kw["messages"][0]["content"][0]["type"] == "image"

@@ -5,6 +5,7 @@ import io
 import json
 import os
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -46,14 +47,19 @@ def load_template(ch):
     return tpl
 
 
-def font_path(ch, tpl, rnd=None):
-    """글씨체: 틀 폴더에 넣은 폰트들 → 틀이 정한 폰트들(프로그램과 함께 오는 무료 폰트) → 맑은 고딕 굵게.
-    여럿이면 매번 하나를 골라 비슷하지만 조금씩 다르게."""
+def fonts(ch, tpl):
+    """고를 수 있는 글씨체들: 틀 폴더에 넣은 폰트들, 없으면 틀이 정한 폰트들 (같은 파일이 여러 번이면 더 자주)."""
     own = [p for p in sorted(template_dir(ch).glob("*")) if p.suffix.lower() in (".ttf", ".otf", ".ttc")]
     given = [template_dir(ch) / f for f in (tpl.get("fonts") or ([tpl["font"]] if tpl.get("font") else []))]
-    for group in (own, [p for p in given if p.exists()]):
-        if group:
-            return (rnd or random).choice(group)
+    return own or [p for p in given if p.exists()]
+
+
+def font_path(ch, tpl, rnd=None, pick=None):
+    """글씨체: 틀 폴더에 넣은 폰트들 → 틀이 정한 폰트들(프로그램과 함께 오는 무료 폰트) → 맑은 고딕 굵게.
+    여럿이면 pick(이름)이 있으면 그것, 없으면 매번 하나를 골라 비슷하지만 조금씩 다르게."""
+    group = fonts(ch, tpl)
+    if group:
+        return next((p for p in group if p.name == pick), None) or (rnd or random).choice(group)
     for p in WINDOWS_FONTS if sys.platform == "win32" else OTHER_FONTS:
         if p.exists():
             return p
@@ -104,6 +110,10 @@ def _segments(line, accents):
     return out
 
 
+def _squash(lines):
+    return re.sub(r"[\s/]+", "", "".join(lines))
+
+
 def _split(line):
     """가운데에 가까운 띄어쓰기에서 두 줄로."""
     spaces = [i for i, ch in enumerate(line) if ch == " "]
@@ -128,25 +138,44 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
     아래쪽 그늘(shade_dir "bottom"), 실제 사진 자리 여러 개(inset.boxes, 매번 하나), 기본 로고(로고_기본.png)."""
     rnd = rnd or random.Random()
     tpl, plan = load_template(ch), plan or {}
-    t = tpl["text"]
+    t = dict(tpl["text"])
     lines = [s.strip() for s in (text or "").replace("\\n", "/").split("/") if s.strip()]  # 비면 글자 없이 (후보 미리보기)
+    if plan.get("lines") and _squash(plan["lines"]) == _squash(lines):  # Claude가 나눈 줄 (글자는 그대로일 때만)
+        lines = [s.strip() for s in plan["lines"] if s.strip()]
     if len(lines) > t["max_lines"]:
         raise ValueError(f"썸네일 문구가 {len(lines)}줄입니다 (이 채널은 {t['max_lines']}줄까지).")
-    font_file = font_path(ch, tpl, rnd)
+    layouts, spots_ok = tpl.get("layouts"), None
+    if layouts:  # 글자 자리가 여럿인 틀: Claude가 고른 자리, 없으면 앞서 쓴 자리를 피해 무게대로
+        lay = next((x for x in layouts if x["name"] == plan.get("layout")), None)
+        if not lay:
+            pool = [x for x in layouts if x["name"] not in plan.get("avoid", [])] or layouts
+            lay = rnd.choices(pool, weights=[x.get("weight", 1) for x in pool])[0]
+        t.update({k: lay[k] for k in ("box", "valign") if k in lay})
+        t["sides"], spots_ok = [lay.get("align", "center")], lay.get("spots")
+        plan = plan | {"side": t["sides"][0], "layout": lay["name"]}
+    if isinstance(plan.get("size"), (int, float)):  # 글자 크기 조금씩 (0.85~1.1배)
+        f = min(1.1, max(0.85, float(plan["size"])))
+        t["size_max"], t["size_min"] = int(t["size_max"] * f), int(t["size_min"] * min(f, 1))
+    font_file = font_path(ch, tpl, rnd, plan.get("font"))
     lost = missing_glyphs(ImageFont.truetype(str(font_file), 40), "".join(lines))
     if lost:
         raise ValueError(f"폰트({font_file.name})에 없는 글자가 있어 깨집니다: {' '.join(lost)} — 문구에서 빼거나 다른 폰트를 쓰세요.")
     side = plan.get("side") if plan.get("side") in t["sides"] else rnd.choice(t["sides"])
-    style = rnd.choice(tpl["styles"])
+    si = plan["style"] if isinstance(plan.get("style"), int) and 0 <= plan["style"] < len(tpl["styles"]) \
+        else rnd.randrange(len(tpl["styles"]))
+    style = tpl["styles"][si]
     jit = tpl.get("jitter", 0)
+    mirror = not layouts  # 글자 자리가 정해진 틀은 좌우를 뒤집지 않는다
 
     canvas = _cover(_image(base), *SIZE).convert("RGBA")
-    if tpl.get("shade"):  # 글자 쪽(또는 아래쪽)으로 갈수록 어두워지는 그늘 (글자가 잘 읽히게)
-        bottom = tpl.get("shade_dir") == "bottom" or side == "center"
+    if tpl.get("shade"):  # 글자 쪽으로 갈수록 어두워지는 그늘 (글자가 잘 읽히게)
+        way = (lay.get("shade") if layouts else None) or ("bottom" if tpl.get("shade_dir") == "bottom" or side == "center" else side)
+        vertical = way in ("bottom", "top")
         shade = Image.new("L", SIZE)
-        for i in range(SIZE[1] if bottom else SIZE[0]):
-            k = i / SIZE[1] if bottom else (1 - i / SIZE[0] if side == "left" else i / SIZE[0])
-            band = (0, i, SIZE[0], i + 1) if bottom else (i, 0, i + 1, SIZE[1])
+        n = SIZE[1] if vertical else SIZE[0]
+        for i in range(n):
+            k = i / n if way in ("bottom", "right") else 1 - i / n
+            band = (0, i, SIZE[0], i + 1) if vertical else (i, 0, i + 1, SIZE[1])
             shade.paste(int(255 * tpl["shade"] * max(0.0, k * 1.6 - 0.6)), band)
         canvas = Image.composite(Image.new("RGBA", SIZE, (0, 0, 0, 255)), canvas, shade)
 
@@ -160,10 +189,11 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
             mark = mark.resize((logo["width"], round(mark.height * logo["width"] / mark.width)), Image.LANCZOS)
 
     inset = tpl.get("inset")
-    if photo and inset:  # 실제 사진: 글자 반대쪽 위, 흰 테두리 + 그림자 + 살짝 기울임
-        spots = inset.get("boxes") or [inset["box"]]
-        spot = spots[plan["spot"]] if isinstance(plan.get("spot"), int) and 0 <= plan["spot"] < len(spots) else rnd.choice(spots)
-        x, y, w, h = _mirror(spot, side) if side != "center" else spot  # 사진 칸은 '글자 왼쪽' 기준 (오른쪽이면 뒤집음)
+    spots = (inset.get("boxes") or [inset["box"]]) if inset else []
+    allowed = [i for i in range(len(spots)) if spots_ok is None or i in spots_ok]  # 글자 자리에 맞는 사진 자리
+    if photo and allowed:  # 실제 사진: 글자를 피한 자리 (틀에 따라 흰 테두리·그림자·기울임)
+        spot = spots[plan["spot"] if plan.get("spot") in allowed else rnd.choice(allowed)]
+        x, y, w, h = _mirror(spot, side) if mirror and side != "center" else spot  # 사진 칸은 '글자 왼쪽' 기준
         if mark:  # 채널 마크를 가리지 않게 마크 아래로
             lx, ly = logo["pos"]
             if x < lx + mark.width and lx < x + w and y < ly + mark.height and ly < y + h:
@@ -180,7 +210,7 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
         canvas.alpha_composite(framed, (x - b, y - b))
 
     box = [round(v * (1 + rnd.uniform(-jit, jit))) if i < 2 else v for i, v in enumerate(t["box"])]
-    box = _mirror(box, side) if side != "center" else box
+    box = _mirror(box, side) if mirror and side != "center" else box
     stroke = t["stroke"]
     font = None
     while lines:  # 안 들어가면 가장 긴 줄을 가운데 가까운 띄어쓰기에서 나눠 다시 (/ 없이 쓴 긴 문구)
@@ -247,7 +277,8 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
     if mark:  # 채널 마크: 늘 같은 파일·같은 자리·같은 크기, 맨 위에
         canvas.alpha_composite(mark, tuple(logo["pos"]))
     out = canvas.convert("RGB")
-    out.info["layout"] = {"lines": lines, "boxes": boxes, "font": font_file.name, "side": side,
+    out.info["layout"] = {"lines": lines, "boxes": boxes, "font": font_file.name, "side": side, "style": si,
+                          "name": plan.get("layout") or side,
                           "glyph": (lambda b: b[3] - b[1])(font.getbbox("가")) if font else 0,
                           "colors": [style.get("accent"), *(fills or [style.get("fill")])], "stroke": style.get("stroke")}
     return out
@@ -362,11 +393,16 @@ def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=
     if not force and path.exists() and note.exists() and json.loads(note.read_text("utf-8")).get("sig") == sig:
         return path
     plan, review = {}, None
+    recent = used_before(folder, path)
     use_ai = bool(key or os.environ.get("ANTHROPIC_API_KEY"))
     if use_ai:
         import ai
-        plan = ai.plan(ai.client(key), base, text, title, desc, tpl["text"]["sides"], (tpl.get("inset") or {}).get("boxes", ()))
+        plan = ai.plan(ai.client(key), base, text, title, desc, options(ch, tpl), recent)
+    else:  # Claude 없이: 최근 두 편에 쓴 글자 자리는 피해서
+        plan = {"avoid": [r.get("layout") for r in recent[-2:]]}
     img = compose(ch, base, text, plan, photo, rnd)
+    lay = img.info["layout"]
+    used = {"layout": lay["name"], "font": lay["font"], "style": lay["style"], "lines": lay["lines"]}
     checks, points = check(img)
     if use_ai:
         try:
@@ -374,9 +410,36 @@ def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=
         except Exception as e:
             log(f"    (Claude 점수 실패: {e})")
     save(img, path)
-    note.write_text(json.dumps({"sig": sig, "plan": plan, "check": checks, "check_score": points, "review": review},
+    note.write_text(json.dumps({"sig": sig, "plan": plan, "used": used, "check": checks, "check_score": points, "review": review},
                                ensure_ascii=False, indent=1), "utf-8")
     return path
+
+
+def options(ch, tpl):
+    """Claude에게 줄 이 채널의 고를 거리: 글자 자리·색 조합·글씨체·사진 자리."""
+    out = {"sides": tpl["text"]["sides"], "max_lines": tpl["text"]["max_lines"],
+           "spots": (tpl.get("inset") or {}).get("boxes", []),
+           "fonts": sorted({p.name for p in fonts(ch, tpl)}),
+           "styles": [s.get("_설명") or f"줄 색 {s.get('line_fills') or s.get('fill')}, 강조 {s.get('accent')}" for s in tpl["styles"]]}
+    if tpl.get("layouts"):
+        out["layouts"] = [(x["name"], x.get("_설명", "") + (f" (사진 자리 {x['spots']}번만)" if x.get("spots") is not None else ""))
+                          for x in tpl["layouts"]]
+    return out
+
+
+def used_before(folder, path, n=4):
+    """같은 채널 폴더에서 먼저 만든 최종 썸네일들이 쓴 조합 (오래된 것부터, 최근 n개)."""
+    notes = sorted((q for q in Path(folder).glob("*_자동썸네일.json") if q != path.with_suffix(".json")),
+                   key=lambda q: q.stat().st_mtime)
+    out = []
+    for q in notes[-n:]:
+        try:
+            u = json.loads(q.read_text("utf-8")).get("used")
+        except (OSError, ValueError):
+            continue
+        if u:
+            out.append({k: u[k] for k in ("layout", "font", "style") if k in u})
+    return out
 
 
 def examples(ch, n=3):

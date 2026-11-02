@@ -581,8 +581,9 @@ def thumb_test(ui):
     if key or os.environ.get("ANTHROPIC_API_KEY"):
         try:
             cl = ai.client(key)
-            plan = ai.plan(cl, base, text, title, desc, tpl["text"]["sides"], (tpl.get("inset") or {}).get("boxes", ()))
-            note(f"✓ Claude 배치: 글자 {plan.get('side')}, 강조 {plan.get('accents')}, 검색어 {plan.get('queries')}")
+            plan = ai.plan(cl, base, text, title, desc, thumbs.options(ch, tpl))
+            note(f"✓ Claude 디자인: 자리 {plan.get('layout') or plan.get('side')}, 줄 {plan.get('lines')}, 강조 {plan.get('accents')}, "
+                 f"색 {plan.get('style')}, 글씨체 {plan.get('font')}, 크기 {plan.get('size')}, 검색어 {plan.get('queries')}")
             if tpl.get("inset"):
                 photo, credit = ai.find_photo(cl, plan.get("queries", []), text, title, note)
                 note(f"✓ 실제 사진: {credit}" if photo else "  실제 사진: 알맞은 후보 없음 (사진 없이 만듦)")

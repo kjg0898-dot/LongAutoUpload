@@ -912,6 +912,9 @@ class PrepWindow:
             lines.append(f"Claude 점수 {review.get('total', 0)}/100" if review.get("policy_ok", True)
                          else f"⛔ 정책 위험: {review.get('policy_reason', '')}")
             lines += [f"· {tip}" for tip in review.get("tips", [])]
+            if review.get("title_score") is not None:
+                lines.append(f"제목 점수 {review['title_score']}/100")
+                lines += [f"· {tip}" for tip in review.get("title_tips", [])]
         if points is not None:
             lines.append(f"자동 점검 {points}/100" + "".join(f"\n⚠ {m}" for ok, m in checks if not ok))
         c["score"].config(text="\n".join(lines), foreground=COLORS["accent"] if review and not review.get("policy_ok", True) else "")

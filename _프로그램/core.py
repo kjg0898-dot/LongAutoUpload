@@ -38,7 +38,7 @@ DEFAULT_CHANNEL = {
     "desc_mode": "맨 앞", "desc_marker": "",
     "tags_mode": "뒤에 추가", "playlist": "",
     "category": KEEP, "language": KEEP, "synthetic": KEEP, "kids": KEEP,
-    "embeddable": KEEP, "stats": KEEP, "license": KEEP,
+    "embeddable": KEEP, "license": KEEP,
     "channel_id": "", "channel_title": "",
 }
 DEFAULT_CONFIG = {"channels": [], "max_fails": 3, "mode": "한 번에 전체"}
@@ -100,9 +100,9 @@ def overrides(ch):
         snippet["categoryId"] = CATEGORIES[ch["category"]]
     if ch["language"] != KEEP:
         snippet["defaultLanguage"] = snippet["defaultAudioLanguage"] = LANGUAGES[ch["language"]]
-    yes = {"예": True, "아니요": False, "허용": True, "허용 안 함": False, "공개": True, "비공개": False}
+    yes = {"예": True, "아니요": False, "허용": True, "허용 안 함": False}
     for key, field in (("synthetic", "containsSyntheticMedia"), ("kids", "selfDeclaredMadeForKids"),
-                       ("embeddable", "embeddable"), ("stats", "publicStatsViewable")):
+                       ("embeddable", "embeddable")):
         if ch[key] != KEEP:
             status[field] = yes[ch[key]]
     if ch["license"] != KEEP:

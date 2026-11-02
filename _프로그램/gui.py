@@ -647,7 +647,6 @@ FIELDS = [
     ("synthetic", "AI 변경·합성 콘텐츠", [core.KEEP, "예", "아니요"]),
     ("kids", "아동용", [core.KEEP, "예", "아니요"]),
     ("embeddable", "퍼가기", [core.KEEP, "허용", "허용 안 함"]),
-    ("stats", "공개 통계 표시", [core.KEEP, "공개", "비공개"]),
     ("license", "라이선스", [core.KEEP, "표준 YouTube 라이선스", "크리에이티브 커먼즈"]),
 ]
 COPY_SKIP = {"key", "name", "folder", "channel_id", "channel_title"}  # 채널 복제 때 새로 정하는 칸

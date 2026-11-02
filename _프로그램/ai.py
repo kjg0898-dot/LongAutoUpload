@@ -10,6 +10,12 @@ from PIL import Image
 MODEL = "claude-opus-5-5"
 UA = "LongAutoUpload/1.0 (https://github.com/kjg0898-dot/LongAutoUpload)"  # 위키미디어는 이름 없는 요청을 막는다
 COMMONS = "https://commons.wikimedia.org/w/api.php"
+PRICE = (4, 20)  # claude-opus-5-5 달러 / 100만 토큰 (입력, 출력)
+USAGE = []  # 이번에 켠 뒤 쓴 토큰 [(입력, 출력)] — 실제 비용 확인용
+
+
+def cost(usages):
+    return sum(i * PRICE[0] + o * PRICE[1] for i, o in usages) / 1e6
 
 
 def client(key=""):
@@ -45,6 +51,10 @@ def ask(cl, content, schema):
         raise RuntimeError(f"Claude API 오류 ({e.status_code}): {e.message}") from None
     except anthropic.APIConnectionError:
         raise RuntimeError("Claude API에 연결하지 못했습니다 (인터넷 확인).") from None
+    u = getattr(res, "usage", None)
+    if u:
+        USAGE.append((u.input_tokens + (u.cache_read_input_tokens or 0) + (u.cache_creation_input_tokens or 0),
+                      u.output_tokens))
     if res.stop_reason == "refusal":
         raise RuntimeError("Claude가 이 요청을 거절했습니다.")
     text = next((b.text for b in res.content if b.type == "text"), "")
@@ -107,6 +117,7 @@ def find_photo(cl, queries, text, title, log=print, per_query=4, limit=6):
         except OSError as e:
             log(f"    (위키미디어 검색 실패: {q} — {e})")
             continue
+        log(f"    위키미디어 '{q}': 저작권 풀린 사진 {len(found)}개")
         for c in found:
             if c["title"] not in seen and len(cands) < limit:
                 try:
@@ -125,4 +136,7 @@ def find_photo(cl, queries, text, title, log=print, per_query=4, limit=6):
         "글자만 빽빽한 문서는 피함. 알맞은 게 없으면 choice는 -1.")})
     pick = ask(cl, content, _schema({"choice": {"type": "integer"}, "reason": {"type": "string"}}))
     i = pick.get("choice", -1)
-    return cands[i] if 0 <= i < len(cands) else (None, "")
+    if not 0 <= i < len(cands):
+        return None, ""
+    name, img = cands[i]
+    return img, name

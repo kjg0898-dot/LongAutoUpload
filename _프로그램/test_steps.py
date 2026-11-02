@@ -621,6 +621,38 @@ def test_thumbnail_rules():
         assert len({img.tobytes() for img in imgs}) > 1  # 매번 조금씩 다름
 
 
+def test_thumb_test_report():
+    """썸네일 시험: 가짜 Claude로 돌려 결과 파일·그림이 생기고 토큰·비용이 적힌다."""
+    import ai
+    import thumbs
+    from PIL import Image
+    from types import SimpleNamespace as NS
+    saved = (ai.client, ai.search_commons, ai.download, core.PROG)
+    replies = iter(['{"side": "right", "accents": ["백기"], "queries": ["MRE"]}', '{"choice": 0, "reason": "ok"}'])
+
+    class Msgs:
+        def create(self, **kw):
+            return NS(stop_reason="end_turn", content=[NS(type="text", text=next(replies))],
+                      usage=NS(input_tokens=1500, output_tokens=900, cache_read_input_tokens=None,
+                               cache_creation_input_tokens=None))
+    ai.client = lambda key: NS(beta=NS(messages=Msgs()))
+    ai.search_commons = lambda q, n: [{"title": "MRE.jpg", "url": "u"}]
+    ai.download = lambda url: Image.new("RGB", (800, 600), "red")
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            setup(d)
+            ui = UI()
+            core.PROG, thumbs.TEMPLATE_DIR = Path(d), Path(d) / "틀"
+            cfg = core.load_config()
+            cfg["claude_key"] = "sk-ant-test"
+            core.save_config(cfg)
+            image, report = steps.thumb_test(ui)
+            text = report.read_text("utf-8")
+            assert image.exists() and "✓ 실제 사진: MRE.jpg" in text and "요청 2번" in text and "$0.048" in text, text
+    finally:
+        ai.client, ai.search_commons, ai.download, core.PROG = saved
+
+
 def test_publish_times():
     fake = FakeYouTube(["a.mp4", "b.mp4", "c.mp4"])
     fake.videos_db["vid0"]["status"]["publishAt"] = "2026-10-26T03:15:00Z"  # 예약

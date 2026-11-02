@@ -1,2 +1,5 @@
+openpyxl
 google-api-python-client
 google-auth-oauthlib
+pillow
+anthropic

@@ -29,6 +29,11 @@ def ensure_packages():
     except ImportError:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", *PACKAGES],
                               creationflags=NO_WINDOW if sys.platform == "win32" else 0)
+    try:
+        import tkinterdnd2  # noqa: F401  파일 끌어다 놓기 (없으면 버튼으로만)
+    except ImportError:
+        subprocess.call([sys.executable, "-m", "pip", "install", "--quiet", "tkinterdnd2"],
+                        creationflags=NO_WINDOW if sys.platform == "win32" else 0)
 
 
 def toast(title, msg):
@@ -74,13 +79,14 @@ class App:
         top.pack(fill="x")
         ttk.Label(top, text="롱폼 자동 업로드", font=(FONT, 15, "bold")).pack(side="left")
         # 자주 안 쓰는 것은 '더보기'에 모은다
-        more = ttk.Menubutton(top, text="더보기 ▾")
+        more = ttk.Menubutton(top, text="더보기")
         menu = tk.Menu(more, tearoff=0)
         for item in (("영상 폴더 열기", lambda: self.open_dir(core.VIDEO_DIR)), ("빈 묶음 폴더 만들기", self.make_batch),
                           ("완료 폴더 열기", lambda: self.open_dir(core.DONE_DIR)),
                           ("엑셀로 열기", self.open_excel), ("작업 기록 보기", lambda: self.open_dir(core.LOG_DIR)), None,
                           ("목록(엑셀)만 다시 만들기", lambda: self.run(steps.build_excel)),
                           ("정보·댓글만 넣기", lambda: self.run(steps.fill_all)), None,
+                          ("썸네일 시험 (실제 Claude)", self.thumb_test), None,
                           ("업데이트 확인", self.update), ("청소", self.clean_window)):
             menu.add_separator() if item is None else menu.add_command(label=item[0], command=item[1])
         more["menu"] = menu
@@ -122,6 +128,8 @@ class App:
             card.columnconfigure(1, weight=1)
             self.cards[key] = (card, badge, name, info, stack)
             self.buttons[key] = stack.winfo_children()[0]
+        self.drop_hint = ttk.Label(left, foreground=COLORS["muted"], wraplength=380, justify="left")
+        self.drop_hint.pack(anchor="w", pady=(6, 0))
 
         # 오른쪽: 영상 목록
         head = ttk.Frame(right)
@@ -166,12 +174,13 @@ class App:
         self.progress.pack(side="right")
         self.state = ttk.Label(bottom, text="대기 중")
         self.state.pack(side="right", padx=8)
-        self.text = scrolledtext.ScrolledText(root, wrap="word", font=(FONT, 9), height=7)
+        self.text = scrolledtext.ScrolledText(root, wrap="word", font=(FONT, 9), height=5)
         self.text.pack(fill="x", padx=12, pady=(0, 10))
 
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.bind("<F5>", lambda e: self.refresh_status())
         self.first_run_guide()
+        self.enable_drop()
         self.refresh_status()
         root.after(100, self.poll)
         self.check_update()
@@ -277,6 +286,12 @@ class App:
     def review_thumbs(self, rows):
         """만든 썸네일 확인. 진행이면 True."""
         return self._wait_window(ThumbReview, rows)
+
+    def thumb_test(self):
+        def work(app):
+            image, report = self.steps.thumb_test(app)
+            app.later(lambda: [open_path(p) for p in (report, image) if p])
+        self.run(work, "썸네일 시험")
 
     def auto_run(self):
         def work(app):
@@ -410,15 +425,49 @@ class App:
             ttk.Button(win, text=ch["name"], command=lambda c=ch: (chosen.append(c), win.destroy())).pack(
                 fill="x", padx=12, pady=2)
         ttk.Button(win, text="취소", command=win.destroy).pack(pady=10)
+        fit(win)
         self.root.wait_window(win)
         return chosen[0] if chosen else None
 
-    def import_seo(self):
+    def enable_drop(self):
+        """파일·폴더를 창에 끌어다 놓으면 넣는다 (메모장 → SEO 넣기, 그림 → 사진·썸네일 넣기). 부품이 없으면 버튼만."""
+        try:  # 창 전체를 받는 곳으로 (main에서 끌어다 놓기용 창으로 만든 경우에만)
+            from tkinterdnd2 import DND_FILES
+            self.root.drop_target_register(DND_FILES)
+            self.root.dnd_bind("<<Drop>>", lambda e: (self.handle_drop(self.root.tk.splitlist(e.data)), e.action)[1])
+            self.drop_hint.config(text="※ SEO 메모장·사진 파일을 이 창에 끌어다 놓아도 됩니다 (여러 개 한 번에)")
+        except Exception:
+            self.drop_hint.config(text="")
+
+    def handle_drop(self, paths):
+        if self.busy:
+            return messagebox.showinfo("잠시만요", "작업이 끝난 뒤에 넣어주세요.")
+        files = []
+        for p in map(Path, paths):  # 폴더를 놓으면 안의 파일 전부
+            files += sorted(f for f in p.rglob("*") if f.is_file()) if p.is_dir() else [p]
+        memos = [f for f in files if f.suffix.lower() == ".txt"]
+        pics = [f for f in files if f.suffix.lower() in core.IMAGE_EXT]
+        if not memos and not pics:
+            return messagebox.showinfo("넣기", "SEO 메모장(.txt)이나 사진(.jpg·.png)을 놓아주세요."
+                                       + ("\n영상은 Studio에 올리면 됩니다." if any(f.suffix.lower() in core.VIDEO_EXT for f in files) else ""))
+        cfg = core.load_config()
+        if not cfg["channels"]:
+            return messagebox.showinfo("넣기", "설정에서 채널을 먼저 추가해주세요.")
+        ch = self.pick_channel(f"메모장 {len(memos)}개 · 사진 {len(pics)}개 — 어느 채널 것인가요?", cfg["channels"])
+        if not ch:
+            return
+        if memos:
+            self.import_seo(memos, ch)
+        if pics:
+            self.add_thumbs(pics, ch)
+
+    def import_seo(self, paths=None, ch=None):
         cfg = core.load_config()
         if not cfg["channels"]:
             return messagebox.showinfo("SEO 넣기", "설정에서 채널을 먼저 추가해주세요.")
-        paths = filedialog.askopenfilenames(title="SEO 메모장 고르기", filetypes=[("메모장", "*.txt"), ("모든 파일", "*.*")])
-        ch = paths and self.pick_channel("어느 채널의 SEO인가요?", cfg["channels"])
+        paths = paths or filedialog.askopenfilenames(title="SEO 메모장 고르기 (여러 개 가능)",
+                                                     filetypes=[("메모장", "*.txt"), ("모든 파일", "*.*")])
+        ch = ch or (paths and self.pick_channel("어느 채널의 SEO인가요?", cfg["channels"]))
         if not ch:
             return
         try:
@@ -447,16 +496,20 @@ class App:
                 return messagebox.showinfo("작업표 열기", "이 묶음에는 작업표가 없습니다. 'SEO 넣기'로 SEO를 넣으면 만들어집니다.")
             open_path(sheets[0])
 
-    def add_thumbs(self):
-        ch, folder = self._working_channel("사진·썸네일 넣기")
+    def add_thumbs(self, paths=None, ch=None):
+        if ch:
+            dirs = core.channel_dirs(ch)
+            folder = dirs[-1] if dirs else core.seo_folder(ch)  # 아직 SEO 전이면 오늘 날짜 묶음에
+        else:
+            ch, folder = self._working_channel("사진·썸네일 넣기")
         if not folder:
             return
         what = "재료 사진" if ch["thumb_auto"] else "썸네일"
         if ch["thumb_auto"]:  # 썸네일은 프로그램이 만든다: 깔 사진은 재료 폴더로 (썸네일로 짝짓지 않게)
             folder = folder / core.MATERIAL
             folder.mkdir(exist_ok=True)
-        paths = filedialog.askopenfilenames(title=f"[{ch['name']}] {what} 고르기 (여러 개 가능)",
-                                            filetypes=[("그림", "*.png *.jpg *.jpeg"), ("모든 파일", "*.*")])
+        paths = paths or filedialog.askopenfilenames(title=f"[{ch['name']}] {what} 고르기 (여러 개 가능)",
+                                                     filetypes=[("그림", "*.png *.jpg *.jpeg"), ("모든 파일", "*.*")])
         if not paths:
             return
         warn = []
@@ -528,16 +581,22 @@ class App:
         win.title("청소")
         ttk.Label(win, padding=10, justify="left", text=(
             "지울 것을 고르세요. 윈도우에서는 휴지통으로 가서 되살릴 수 있습니다.\n"
-            "프로그램 파일은 지우지 않습니다 (지워도 켤 때 자동 업데이트로 다시 받음).")).pack(anchor="w")
+            "프로그램 파일, 설정·로그인, 열쇠 파일, 썸네일 틀(로고·폰트)은 지우지 않습니다.")).pack(anchor="w")
         checks = {}
         for name, on, risky in core.CLEAN_GROUPS:
             paths = groups[name]
             var = tk.BooleanVar(value=on and bool(paths))
             size = core.size_of(paths)
             label = f"{'⚠ ' if risky else ''}{name} — " + (f"{len(paths)}개, {size / 1024 / 1024:.1f}MB" if paths else "없음")
-            cb = ttk.Checkbutton(win, text=label, variable=var)
-            cb.pack(anchor="w", padx=14, pady=1)
-            if not paths:
+            row = ttk.Frame(win)
+            row.pack(fill="x", padx=14, pady=1)
+            cb = ttk.Checkbutton(row, text=label, variable=var)
+            cb.pack(side="left")
+            if paths:
+                ttk.Button(row, text="목록", width=5, command=lambda n=name, ps=paths: messagebox.showinfo(
+                    n, "\n".join(str(p.relative_to(core.ROOT)) for p in ps[:40]) + (f"\n… 외 {len(ps) - 40}개" if len(ps) > 40 else ""),
+                    parent=win)).pack(side="right")
+            else:
                 cb.state(["disabled"])
             checks[name] = (var, risky, paths)
         bar = ttk.Frame(win, padding=10)
@@ -558,16 +617,20 @@ class App:
             win.destroy()
 
             def work(app):
-                failed = core.trash([p for _, _, paths in chosen for p in paths])
+                every = [p for _, _, paths in chosen for p in paths]
+                size = core.size_of(every)
+                failed = core.trash(every)
                 if failed:
                     app.alert("청소: 지우지 못한 것 (다른 프로그램에서 열려 있는지 확인):\n" + "\n".join(str(f) for f in failed))
                 else:  # 기록 파일에는 안 남긴다 (방금 지운 기록 폴더가 다시 생기지 않게)
-                    msg = "청소: 깨끗하게 지웠습니다. " + ", ".join(name.split(" (")[0] for name, _, _ in chosen)
+                    msg = (f"청소: {size / 1024 / 1024:.1f}MB를 지웠습니다. "
+                           + ", ".join(name.split(" (")[0] for name, _, _ in chosen))
                     toast("롱폼 자동 업로드", msg)
                     app.q.put(("log", msg))
             self.run(work, "청소")
-        ttk.Button(bar, text="모두 선택 (완전 초기화)", command=select_all).pack(side="left")
+        ttk.Button(bar, text="모두 선택", command=select_all).pack(side="left")
         ttk.Button(bar, text="청소하기", command=go).pack(side="right")
+        fit(win)
 
     def open_settings(self):
         if self.settings and self.settings.win.winfo_exists():
@@ -598,6 +661,16 @@ class App:
                 click()  # 채널이 하나면 바로 연다 (여러 채널은 브라우저 프로필을 바꿔 가며 하나씩)
         ttk.Button(win, text="고정을 다 했으면 → 4. 예약 걸기", command=lambda: (win.destroy(), self.run(
             self.steps.schedule_all))).pack(fill="x", padx=10, pady=10)
+        fit(win)
+
+
+def fit(win):
+    """창이 화면 밖으로 나가지 않게: 크기를 화면 안으로 줄이고 가운데에. 들어가면 크기는 그대로 둔다(내용 따라 커지게)."""
+    win.update_idletasks()
+    sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+    w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+    size = f"{min(w, sw - 40)}x{min(h, sh - 90)}" if w > sw - 40 or h > sh - 90 else ""
+    win.geometry(f"{size}+{max(0, (sw - min(w, sw - 40)) // 2)}+{max(0, (sh - min(h, sh - 90)) // 2 - 30)}")
 
 
 def photo_image(path, width):
@@ -611,14 +684,17 @@ def photo_image(path, width):
         return None
 
 
-def scroll_area(win, width, height):
-    """세로로 스크롤되는 칸. 안쪽 틀을 돌려준다."""
+def scroll_area(win):
+    """세로로 스크롤되는 칸. 안쪽 틀을 돌려준다. 칸 크기는 내용에 맞추되 화면을 넘지 않게."""
     box = ttk.Frame(win)
     box.pack(fill="both", expand=True, padx=12)
-    canvas = tk.Canvas(box, highlightthickness=0, width=width, height=height)
+    canvas = tk.Canvas(box, highlightthickness=0)
     bar = ttk.Scrollbar(box, orient="vertical", command=canvas.yview)
     inner = ttk.Frame(canvas)
-    inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    limit = win.winfo_screenwidth() - 100, win.winfo_screenheight() - 260
+    inner.bind("<Configure>", lambda e: canvas.configure(
+        scrollregion=canvas.bbox("all"), width=min(inner.winfo_reqwidth(), limit[0]),
+        height=min(inner.winfo_reqheight(), limit[1])))
     canvas.create_window((0, 0), window=inner, anchor="nw")
     canvas.configure(yscrollcommand=bar.set)
     canvas.pack(side="left", fill="both", expand=True)
@@ -645,7 +721,7 @@ class TitleReview:
         ttk.Label(win, padding=(12, 10, 12, 4), text=(
             f"새 영상 {len(rows)}개 — 제목을 ▾에서 고르거나 직접 고치세요. 처음 값은 SEO 추천입니다."
             + ("\n썸네일 문구는 / 로 줄을 나눕니다. 이 문구로 썸네일을 자동으로 만듭니다." if auto else ""))).pack(anchor="w")
-        inner = scroll_area(win, 980, min(560, (150 if auto else 112) * len(rows)))
+        inner = scroll_area(win)
         self.vars, self.images = {}, []
         for i, r in enumerate(rows):
             is_auto = r["채널"] in auto
@@ -666,7 +742,7 @@ class TitleReview:
                 ttk.Label(inner, text="제목" if key == "제목" else "썸네일 문구", foreground=COLORS["muted"]).grid(
                     row=3 * i + j, column=1, sticky="nw", padx=(0, 6))
                 var = self.vars[r["파일"]][key] = tk.StringVar(value=r[key])
-                ttk.Combobox(inner, textvariable=var, width=72, values=candidates(r[cands])).grid(
+                ttk.Combobox(inner, textvariable=var, width=64, values=candidates(r[cands])).grid(
                     row=3 * i + j, column=2, sticky="nw")
                 if key == "제목":
                     length = ttk.Label(inner, width=12)
@@ -677,6 +753,7 @@ class TitleReview:
         buttons.pack(fill="x")
         ttk.Button(buttons, text="이대로 진행 ▶", command=self.ok).pack(side="right")
         ttk.Button(buttons, text="취소", command=self.cancel).pack(side="right", padx=6)
+        fit(win)
 
     @staticmethod
     def show_length(var, label):
@@ -711,7 +788,7 @@ class ThumbReview:
         win.protocol("WM_DELETE_WINDOW", lambda: self.finish(False))
         ttk.Label(win, padding=(12, 10, 12, 4), text=(
             f"썸네일 {len(rows)}개 — 마음에 안 드는 것만 '다시 만들기'. 문구를 바꾸려면 취소 → '2. 자동 처리'를 다시 누르세요.")).pack(anchor="w")
-        inner = scroll_area(win, 1000, min(600, 290 * ((len(rows) + 1) // 2)))
+        inner = scroll_area(win)
         self.images, self.labels, self.busy = {}, {}, set()
         for i, r in enumerate(rows):
             cell = ttk.Frame(inner, padding=6)
@@ -727,6 +804,7 @@ class ThumbReview:
         buttons.pack(fill="x")
         ttk.Button(buttons, text="이대로 진행 ▶", command=lambda: self.finish(True)).pack(side="right")
         ttk.Button(buttons, text="취소", command=lambda: self.finish(False)).pack(side="right", padx=6)
+        fit(win)
 
     def show(self, r):
         img = photo_image(core.VIDEO_DIR / r["썸네일"], 448)
@@ -823,6 +901,7 @@ class Editor:
         win.bind("<Return>", lambda e: self.save_and_move(1))
         win.bind("<Escape>", lambda e: win.destroy())
         self.load()
+        fit(win)
 
     def load(self):
         r = self.row = self.app.rows[self.index]
@@ -929,11 +1008,13 @@ class Settings:
         win.protocol("WM_DELETE_WINDOW", self.close)
         left = ttk.Frame(win, padding=8)
         left.pack(side="left", fill="y")
+        # 버튼을 먼저 아래에 붙인다: 화면이 작아 창이 줄어도 저장 버튼이 잘리지 않게
+        ttk.Button(left, text="저장", command=self.save).pack(side="bottom", fill="x", pady=(10, 2), ipady=4)
+        for text, cmd in reversed((("채널 추가", self.add), ("채널 삭제", self.remove), ("로그인", self.login))):
+            ttk.Button(left, text=text, command=cmd).pack(side="bottom", fill="x", pady=2)
         self.listbox = tk.Listbox(left, width=26, exportselection=False, font=(FONT, 10))
-        self.listbox.pack(fill="y", expand=True)
+        self.listbox.pack(fill="both", expand=True)
         self.listbox.bind("<<ListboxSelect>>", lambda e: self.select())
-        for text, cmd in (("채널 추가", self.add), ("채널 삭제", self.remove), ("로그인", self.login)):
-            ttk.Button(left, text=text, command=cmd).pack(fill="x", pady=2)
 
         form = ttk.Frame(win, padding=8)
         form.pack(side="left", fill="both", expand=True)
@@ -959,8 +1040,8 @@ class Settings:
 
         adv = ttk.Frame(form)
         toggle = ttk.Button(form, text="고급 설정 ▸ (보통 안 건드려도 됨)")
-        toggle.config(command=lambda: (adv.grid_remove(), toggle.config(text="고급 설정 ▸ (보통 안 건드려도 됨)"))
-                      if adv.winfo_ismapped() else (adv.grid(), toggle.config(text="고급 설정 ▾")))
+        toggle.config(command=lambda: ((adv.grid_remove(), toggle.config(text="고급 설정 ▸ (보통 안 건드려도 됨)"))
+                                       if adv.winfo_ismapped() else (adv.grid(), toggle.config(text="고급 설정 ▾")), fit(win)))
         toggle.grid(row=n + 1, column=0, columnspan=2, sticky="w", pady=(10, 4))
         adv.grid(row=n + 2, column=0, columnspan=2, sticky="w")
         for i, (key, label, kind) in enumerate(ADVANCED):
@@ -988,9 +1069,9 @@ class Settings:
             "※ API 키가 없으면 썸네일은 실제 사진 없이 만들고, 강조는 마지막 줄")).grid(
             row=m + 4, column=0, columnspan=2, sticky="w", pady=(6, 0))
         adv.grid_remove()
-        ttk.Button(form, text="저장", command=self.save).grid(row=n + 3, column=1, sticky="e", pady=10)
         self.refresh(0)
         self.saved = True
+        fit(win)
 
     def commit(self):
         if self.cur is not None:
@@ -1158,8 +1239,10 @@ def setup_display(root):
         except tk.TclError:
             pass
     scale = root.winfo_fpixels("1i") / 96
-    root.geometry(f"{int(1240 * scale)}x{int(760 * scale)}")
-    root.minsize(int(960 * scale), int(600 * scale))
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    w, h = min(int(1240 * scale), sw - 20), min(int(760 * scale), sh - 90)  # 작은 화면·큰 배율에서도 화면 안에
+    root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 2 - 30)}")
+    root.minsize(min(int(960 * scale), w), min(int(560 * scale), h))
 
 
 def main():
@@ -1169,7 +1252,11 @@ def main():
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception:
             pass
-    root = tk.Tk()
+    try:  # 파일을 끌어다 놓을 수 있는 창 (부품이 아직 없으면 보통 창 — 다음에 켤 때부터)
+        from tkinterdnd2 import TkinterDnD
+        root = TkinterDnD.Tk()
+    except Exception:
+        root = tk.Tk()
     if sys.version_info < (3, 9):
         messagebox.showerror("파이썬 버전", f"파이썬 3.9 이상이 필요합니다. 지금: {sys.version.split()[0]}")
         return

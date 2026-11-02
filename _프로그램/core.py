@@ -737,9 +737,8 @@ CLEAN_GROUPS = [
     ("엑셀 (업로드목록)", False, False),
     ("완료 폴더 안 파일 (끝난 영상)", False, True),
     ("영상 폴더 안 파일 (진행 중 영상)", False, True),
-    ("설정·로그인 (채널 설정과 로그인 — 다시 로그인 필요)", False, True),
-    ("열쇠 파일 (구글에서 다시 받아야 함)", False, True),
-]
+    ("빈 묶음 폴더 (안에 파일이 하나도 없는 날짜 폴더)", True, False),
+]  # 설정·로그인·열쇠 파일은 지우지 않는다 (실수로 지우면 다시 받고 맞추기 번거로움)
 
 
 def clean_targets():
@@ -749,17 +748,28 @@ def clean_targets():
     names = [g[0] for g in CLEAN_GROUPS]
     groups = {
         names[0]: [PROG / n for n in ("테스트결과.txt", "전체기능_결과.txt", "PC점검_결과.txt", "켜기_오류.txt",
-                                      "리허설", "__pycache__", "토큰/테스트.json")]
-                  + list(PROG.rglob("*.새것")) + list(ROOT.glob("~*.저장중.xlsx")),
+                                      "리허설", "__pycache__", "토큰/테스트.json", "썸네일_시험.jpg", "썸네일_시험_결과.txt")]
+                  + list(PROG.rglob("*.새것")) + list(ROOT.glob("~*.저장중.xlsx")) + leftover_locks(),
         names[1]: [BACKUP_DIR],
         names[2]: [LOG_DIR],
         names[3]: [EXCEL],
         names[4]: inside(DONE_DIR),
         names[5]: inside(VIDEO_DIR),
-        names[6]: [CONFIG, PROG / "토큰"],
-        names[7]: list(PROG.glob("client_secret*.json")),
+        names[6]: [b for d in (VIDEO_DIR, DONE_DIR) if d.exists() for b in d.iterdir()
+                   if b.is_dir() and not any(f.is_file() for f in b.rglob("*"))],
     }
     return {k: [p for p in v if p.exists()] for k, v in groups.items()}
+
+
+def leftover_locks():
+    """엑셀이 비정상으로 꺼져 남은 잠금 파일(~$…xlsx). 엑셀이 열려 있으면 진짜 잠금이라 건드리지 않는다."""
+    locks = list(ROOT.glob("~$*.xlsx"))
+    if locks and EXCEL.exists():
+        try:
+            open(EXCEL, "r+b").close()
+        except PermissionError:
+            return []
+    return locks
 
 
 def size_of(paths):

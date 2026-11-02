@@ -400,9 +400,80 @@ def make_thumbnails(ui, rows, targets, force=False):
         except Exception as e:
             r["오류"] = f"썸네일 만들기 실패: {e}"
             ui.log(f"  ✗ 썸네일: {Path(r['파일']).name}: {e}")
+    import ai
+    before = len(ai.USAGE)
     with ThreadPoolExecutor(4) as pool:
         list(pool.map(one, targets))
+    if len(ai.USAGE) > before:
+        used = ai.USAGE[before:]
+        ui.log(f"Claude 사용: 요청 {len(used)}번, 입력 {sum(i for i, _ in used):,} · 출력 {sum(o for _, o in used):,} 토큰 "
+               f"→ 약 ${ai.cost(used):.2f}")
     _save(ui, rows)
+
+
+def thumb_test(ui):
+    """썸네일 시험: 실제 Claude·위키미디어로 하나 만들어 보고 결과를 파일로 남긴다 (YouTube에는 아무것도 안 함).
+    (그림 경로, 결과 파일 경로)"""
+    import ai
+    import thumbs
+    from PIL import Image, ImageDraw
+    cfg, lines = core.load_config(), []
+
+    def note(msg):
+        lines.append(msg)
+        ui.log(msg)
+    ch = next((c for c in cfg["channels"] if c["thumb_auto"]), None) or (cfg["channels"] or [core.new_channel("시험")])[0]
+    try:
+        rows = core.read_rows()
+    except Exception:
+        rows = []
+    row = next((r for r in rows if r["채널"] == ch["name"] and r["설명"]), None)
+    title = row["제목"] if row else "걸프전 병사들이 모래바람 속에서 삼킨 '전투식량' | 미국VS이라크"
+    desc = row["설명"] if row else "미군 병사들이 비웃던 걸프전 전투식량 MRE가 이라크군 참호에서는 전혀 다른 물건이었습니다."
+    text = (row or {}).get("썸네일문구") or "미군은 버린 봉지 / 적군은 백기 들었다"
+    base = (row and core.material(row)) or next((p for p in core.VIDEO_DIR.rglob("*") if core.MATERIAL in p.parts
+                                                  and p.suffix.lower() in core.IMAGE_EXT), None)
+    if not base:  # 재료 사진이 아직 없으면 시험용 그림
+        base = Image.new("RGB", (1600, 900), "#b08a5a")
+        ImageDraw.Draw(base).ellipse((950, 120, 1350, 900), fill="#5a4426")
+    key = cfg.get("claude_key", "")
+    tpl = thumbs.load_template(ch)
+    note(f"썸네일 시험 {datetime.now():%Y-%m-%d %H:%M} — 채널 '{ch['name']}', 문구 '{text}'")
+    note(f"  배경: {base if isinstance(base, Path) else '시험용 그림 (재료 사진 없음)'}")
+    note(f"  틀: {'틀.json 있음' if (thumbs.template_dir(ch) / '틀.json').exists() else '기본 틀'}, "
+         f"로고: {'있음' if (thumbs.template_dir(ch) / tpl['logo'].get('file', '')).is_file() else '없음'}")
+    try:
+        note(f"  폰트: {thumbs.font_path(ch, tpl)}")
+    except Exception as e:
+        note(f"✗ 폰트: {e}")
+    note(f"  API 키: {'설정에 있음 (' + key[:10] + '…)' if key else ('환경변수 ANTHROPIC_API_KEY' if os.environ.get('ANTHROPIC_API_KEY') else '없음')}")
+    before, start, plan, photo, credit = len(ai.USAGE), time.time(), {}, None, ""
+    if key or os.environ.get("ANTHROPIC_API_KEY"):
+        try:
+            cl = ai.client(key)
+            plan = ai.plan(cl, base, text, title, desc, tpl["text"]["sides"])
+            note(f"✓ Claude 배치: 글자 {plan.get('side')}, 강조 {plan.get('accents')}, 검색어 {plan.get('queries')}")
+            if tpl.get("inset"):
+                photo, credit = ai.find_photo(cl, plan.get("queries", []), text, title, note)
+                note(f"✓ 실제 사진: {credit}" if photo else "  실제 사진: 알맞은 후보 없음 (사진 없이 만듦)")
+        except Exception as e:
+            note(f"✗ Claude·위키미디어: {e}")
+    else:
+        note("  (API 키가 없어 Claude·실제 사진 없이)")
+    used = ai.USAGE[before:]
+    if used:
+        note(f"  Claude 요청 {len(used)}번, 입력 {sum(i for i, _ in used):,} · 출력 {sum(o for _, o in used):,} 토큰 → 약 ${ai.cost(used):.3f}")
+    image = core.PROG / "썸네일_시험.jpg"
+    try:
+        thumbs.save(thumbs.compose(ch, base, text, plan, photo), image)
+        note(f"✓ 썸네일을 만들었습니다 ({time.time() - start:.0f}초): {image}")
+    except Exception as e:
+        image = None
+        note(f"✗ 썸네일 만들기: {e}")
+    report = core.PROG / "썸네일_시험_결과.txt"
+    report.write_text("\n".join(lines) + "\n", "utf-8")
+    note("결과 파일과 썸네일 그림을 Claude에게 보내주세요.")
+    return image, report
 
 
 # ---------- 4. 예약 걸기 ----------

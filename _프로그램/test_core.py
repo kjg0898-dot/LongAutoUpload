@@ -287,7 +287,7 @@ def test_update_keeps_private_files():
         (root / "_프로그램" / "토큰").mkdir(parents=True)
         for name, text in (("_프로그램/core.py", "옛 코드"), ("_프로그램/client_secret.json", "열쇠"),
                            ("_프로그램/설정.json", "설정"), ("_프로그램/토큰/a.json", "로그인"), ("영상/x.mp4", "영상"),
-                           ("실행.pyw", "같음")):
+                           ("실행.pyw", "같음"), ("_프로그램/전체기능_테스트.py", "옛 시험")):
             (root / name).parent.mkdir(parents=True, exist_ok=True)
             (root / name).write_text(text, "utf-8")
         buf = io.BytesIO()
@@ -299,8 +299,8 @@ def test_update_keeps_private_files():
             z.writestr("LongAutoUpload-HEAD/영상/.gitkeep", b"")
             z.writestr("LongAutoUpload-HEAD/.gitignore", b"x")
             z.writestr("LongAutoUpload-HEAD/docs/index.html", b"x")
-        assert update.apply(buf.getvalue(), root, dry=True) == 2 and (root / "_프로그램/core.py").read_text("utf-8") == "옛 코드"
-        assert update.apply(buf.getvalue(), root) == 2
+        assert update.apply(buf.getvalue(), root, dry=True) == 3 and (root / "_프로그램/core.py").read_text("utf-8") == "옛 코드"
+        assert update.apply(buf.getvalue(), root) == 3  # 바뀐 파일 2개 + 지운 옛 시험 파일 1개
         texts = {str(p.relative_to(root)): p.read_text("utf-8") for p in root.rglob("*") if p.is_file()}
         assert texts == {"_프로그램/core.py": "새 코드", "_프로그램/new.md": "새 문서", "_프로그램/client_secret.json": "열쇠",
                          "_프로그램/설정.json": "설정", "_프로그램/토큰/a.json": "로그인", "영상/x.mp4": "영상",
@@ -430,18 +430,22 @@ def test_clean():
         try:
             for f in ("_프로그램/PC점검_결과.txt", "_프로그램/리허설/a.xlsx", "_프로그램/백업/영상/v.json", "_프로그램/기록/1.log",
                       "_프로그램/core.py", "_프로그램/토큰/테스트.json", "_프로그램/토큰/abc.json", "_프로그램/설정.json",
-                      "_프로그램/client_secret_1.json", "영상/.gitkeep", "영상/2026/a.mp4", "완료/b.mp4", "업로드목록.xlsx"):
+                      "_프로그램/client_secret_1.json", "영상/.gitkeep", "영상/2026/a.mp4", "완료/b.mp4", "업로드목록.xlsx",
+                      "~$업로드목록.xlsx"):
                 (root / f).parent.mkdir(parents=True, exist_ok=True)
                 (root / f).write_text("x")
+            (root / "영상" / "2026-10-01" / "채널" / "재료").mkdir(parents=True)  # 파일 없는 빈 묶음 폴더
             groups = core.clean_targets()
             default = [p for (name, on, _), paths in zip(core.CLEAN_GROUPS, groups.values()) if on for p in paths]
             assert core.trash(default) == []
+            assert not (root / "영상" / "2026-10-01").exists() and (root / "영상" / "2026").exists()
             left = sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
             assert left == ["_프로그램/client_secret_1.json", "_프로그램/core.py", "_프로그램/설정.json", "_프로그램/토큰/abc.json",
                             "업로드목록.xlsx", "영상/.gitkeep", "영상/2026/a.mp4", "완료/b.mp4"], left
             assert core.trash([p for paths in core.clean_targets().values() for p in paths]) == []
             left = sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
-            assert left == ["_프로그램/core.py", "영상/.gitkeep"] and (root / "완료").is_dir(), left  # 프로그램은 그대로
+            assert left == ["_프로그램/client_secret_1.json", "_프로그램/core.py", "_프로그램/설정.json", "_프로그램/토큰/abc.json",
+                            "영상/.gitkeep"] and (root / "완료").is_dir(), left  # 프로그램·설정·로그인·열쇠는 그대로
         finally:
             (core.PROG, core.ROOT, core.VIDEO_DIR, core.DONE_DIR, core.EXCEL, core.CONFIG, core.BACKUP_DIR, core.LOG_DIR) = old
 

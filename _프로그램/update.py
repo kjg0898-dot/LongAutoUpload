@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 URL = "https://codeload.github.com/kjg0898-dot/LongAutoUpload/zip/HEAD"  # 기본 브랜치의 최신 상태
+OBSOLETE = ["_프로그램/테스트_초안수정.py", "_프로그램/전체기능_테스트.py"]  # 예전 개발용 시험 파일: 업데이트 때 지운다
 
 
 def fetch():
@@ -35,4 +36,9 @@ def apply(zip_bytes, root=ROOT, dry=False):
             tmp = dst.with_name(dst.name + ".새것")
             tmp.write_bytes(new)
             os.replace(tmp, dst)  # 파일 하나씩 통째로 바꿔서 중간에 끊겨도 반쯤 쓴 파일이 안 남게
+    for rel in OBSOLETE:
+        if (root / rel).is_file():
+            changed += 1
+            if not dry:
+                (root / rel).unlink()
     return changed

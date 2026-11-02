@@ -509,7 +509,7 @@ def test_auto_thumbnails_without_api_key():
         assert [r["상태"] for r in rows] == ["댓글완료", "댓글완료", ""] and fake.thumbs == ["vid0", "vid1"]
         from PIL import Image
         img = Image.open(core.VIDEO_DIR / rows[0]["썸네일"])
-        assert img.size == (1280, 720) and (core.VIDEO_DIR / rows[0]["썸네일"]).stat().st_size <= core.THUMB_MAX
+        assert img.size == (3840, 2160) and (core.VIDEO_DIR / rows[0]["썸네일"]).stat().st_size <= core.THUMB_MAX  # YouTube 권장 4K
         before = (core.VIDEO_DIR / rows[0]["썸네일"]).stat().st_mtime_ns
         thumbs.make(cfg["channels"][0], rows[0])  # 문구·재료가 그대로면 다시 만들지 않음
         assert (core.VIDEO_DIR / rows[0]["썸네일"]).stat().st_mtime_ns == before
@@ -548,7 +548,7 @@ def test_auto_thumbnails_with_claude():
             steps.make_thumbnails(ui, rows, rows[:1])  # 그대로면 다시 안 만들고 실제 사진도 다시 안 찾음
             assert len(calls) == before, calls[before:]
             img = Image.open(core.VIDEO_DIR / rows[0]["썸네일"]).convert("RGB")
-            assert img.getpixel((180, 200))[0] > 200  # 글자가 오른쪽이면 실제 사진(빨강)은 왼쪽 위
+            assert img.resize((1280, 720)).getpixel((180, 200))[0] > 200  # 글자가 오른쪽이면 실제 사진(빨강)은 왼쪽 위
     finally:
         ai.client, ai.plan, ai.find_photo, ai.queries = saved
 
@@ -668,6 +668,45 @@ def test_inset_retry():
             assert note["used"]["photo"] is None and note["review"]["total"] == 80 and "사진 없이" in logs[-1], (note, logs)
         finally:
             ai.client, ai.plan, ai.score = saved
+
+
+def test_latest_rules():
+    """규칙.json: 값을 읽어 쓰고(없는 키는 기본값), 직접 만든 썸네일 점검(50MB·가로 640px·16:9), 최종 4K, 클릭률은 공개 직후로."""
+    import random
+    import thumbs
+    from PIL import Image
+    rules = json.loads((Path(__file__).parent / "규칙.json").read_text("utf-8"))
+    assert core.YT["thumb_max_mb"] == rules["youtube"]["thumb_max_mb"] == 50 and core.THUMB_MAX == 50 * 1024 * 1024
+    assert core.RULES["claude"]["model"] == rules["claude"]["model"] and rules["_출처"]
+    saved = core.PROG
+    with tempfile.TemporaryDirectory() as d:
+        core.PROG = Path(d)
+        (Path(d) / "규칙.json").write_text(json.dumps({"youtube": {"title_max": 80, "모르는키": 1}}), "utf-8")
+        r = core.load_rules()
+        assert r["youtube"]["title_max"] == 80 and r["youtube"]["thumb_max_mb"] == 50 and "모르는키" not in r["youtube"]
+        (Path(d) / "규칙.json").write_text("깨진 파일", "utf-8")
+        assert core.load_rules() == core.RULES_DEFAULT  # 파일이 깨져도 기본값으로 돌아감
+        core.PROG = saved
+        for name, size, want in (("ok.jpg", (1920, 1080), ""), ("small.jpg", (480, 270), "너무 작음"), ("square.jpg", (1000, 1000), "16:9")):
+            Image.new("RGB", size, "gray").save(Path(d) / name)
+            assert (want in core.thumb_problem(Path(d) / name)) if want else core.thumb_problem(Path(d) / name) == "", name
+        # 최종 썸네일은 3840x2160, 기록(글자 자리·사진 자리)은 1280x720 기준이라 미리보기와 같은 숫자
+        thumbs.TEMPLATE_DIR = Path(__file__).parent / "썸네일틀"
+        ch = {**core.DEFAULT_CHANNEL, "name": "세계전쟁사", "folder": "세계전쟁사"}
+        args = (ch, Image.new("RGB", (1600, 900), (40, 60, 80)), "300발 쏴야 / 겨우 1명", {"layout": "아래_가운데", "spot": 0},
+                Image.new("RGB", (800, 600), "red"))
+        small, big = thumbs.compose(*args, random.Random(1)), thumbs.compose(*args, random.Random(1), scale=thumbs.FINAL_SCALE)
+        assert big.size == (3840, 2160) and thumbs.FINAL_SCALE == 3
+        a, b = small.info["layout"], big.info["layout"]
+        assert a["photo"]["spot"] == b["photo"]["spot"] and all(abs(x - y) <= 3 for x, y in zip(a["photo"]["box"], b["photo"]["box"]))
+        assert abs(a["glyph"] - b["glyph"]) <= 4 and abs(a["boxes"][0][1] - b["boxes"][0][1]) <= 6, (a, b)
+        assert thumbs.check(big)[1] == thumbs.check(small)[1]  # 점검 점수도 같음
+        # 클릭률: 공개 직후 이틀만 (오래 지나 낮아진 날은 빼고 비교)
+        thumbs.TEMPLATE_DIR = Path(d)
+        data = {"designs": {"v1": {"layout": "아래"}}, "days": {"v1": {"20261101": [500, 0.1], "20261102": [500, 0.1], "20261120": [5000, 0.01]}}, "after": ""}
+        (Path(d) / "세계전쟁사").mkdir()
+        (Path(d) / "세계전쟁사" / "클릭률.json").write_text(json.dumps(data), "utf-8")
+        assert thumbs.ctr_stats(ch)["layout"] == {"아래": (10.0, 1)}
 
 
 def test_ai_request_and_commons_filter():
@@ -837,7 +876,7 @@ def test_prep_flow():
         out = thumbs.preview(ch, items[0]["선택"], None, Path(d) / "미리.jpg")
         assert Image.open(out).size == (640, 360)
         final = thumbs.make_for(ch, folder, 1, items[0]["썸네일문구"], items[0]["제목"])
-        assert final.name == "1_자동썸네일.jpg" and Image.open(final).getpixel((640, 700))[2] > 150  # 고른 파란 그림
+        assert final.name == "1_자동썸네일.jpg" and Image.open(final).resize((1280, 720)).getpixel((640, 700))[2] > 150  # 고른 파란 그림
         # 초안이 올라오면 목록은 준비 화면 값을 그대로 쓴다 (최종 썸네일도 번호로 찾음)
         rows, problems = core.build_rows({**core.DEFAULT_CONFIG, "channels": [ch]}, [],
                                          {"역사": {"영상_1_내보내기.mp4": "v1", "영상_2_내보내기.mp4": "v2"}})

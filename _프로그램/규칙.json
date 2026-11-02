@@ -1,0 +1,39 @@
+{
+ "_설명": "YouTube·Claude 규칙 값. 매주 자동 점검이 아래 _출처의 공식 문서와 비교해 바뀐 게 있으면 이 파일(과 필요하면 코드)을 고쳐 올립니다. 프로그램은 켤 때 자동 업데이트로 받습니다. 직접 고치지 않아도 됩니다.",
+ "확인한_날": "2026-11-02",
+ "youtube": {
+  "thumb_max_mb": 50,
+  "thumb_width": 3840,
+  "thumb_min_width": 640,
+  "title_max": 100,
+  "desc_max_bytes": 5000,
+  "tags_max": 500,
+  "daily_quota": 10000,
+  "cost_update": 50,
+  "cost_thumbnail": 50,
+  "cost_comment": 50,
+  "cost_playlist": 50
+ },
+ "claude": {
+  "model": "claude-opus-5-5",
+  "price_in": 4,
+  "price_out": 20,
+  "fallback_beta": "server-side-fallback-2026-07-01",
+  "effort": "medium"
+ },
+ "_출처": [
+  "https://developers.google.com/youtube/v3/revision_history",
+  "https://developers.google.com/youtube/v3/docs/thumbnails/set",
+  "https://developers.google.com/youtube/v3/docs/videos",
+  "https://developers.google.com/youtube/v3/determine_quota_cost",
+  "https://developers.google.com/youtube/reporting/v1/reports/channel_reports",
+  "https://developers.google.com/youtube/analytics/revision_history",
+  "https://support.google.com/youtube/answer/72431",
+  "https://support.google.com/youtube/answer/9229980",
+  "https://support.google.com/youtube/answer/12340300",
+  "https://support.google.com/youtube/answer/13861714",
+  "https://support.google.com/youtube/answer/14328491",
+  "https://platform.claude.com/docs/en/about-claude/pricing",
+  "https://platform.claude.com/docs/en/about-claude/models/overview"
+ ]
+}

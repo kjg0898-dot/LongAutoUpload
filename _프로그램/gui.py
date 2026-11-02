@@ -555,8 +555,8 @@ class App:
         for p in map(Path, paths):
             if not core._nums(p):
                 warn.append(f"{p.name}: 이름에 순번 숫자가 없어 어느 영상 것인지 모를 수 있음")
-            if p.stat().st_size > core.THUMB_MAX and not ch["thumb_auto"]:
-                warn.append(f"{p.name}: 2MB를 넘어 YouTube에 못 올림")
+            if not ch["thumb_auto"] and (bad := core.thumb_problem(p)):
+                warn.append(f"{p.name}: {bad}")
             shutil.copy2(p, folder / p.name)
         self.log(f"[{ch['name']}] {what} {len(paths)}개를 넣었습니다: 영상/{core.rel(folder)}"
                  + (" — 썸네일은 '2. 자동 처리'에서 문구를 넣어 만듭니다." if ch["thumb_auto"] else ""))

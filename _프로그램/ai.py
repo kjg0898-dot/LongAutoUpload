@@ -10,10 +10,13 @@ import urllib.request
 
 from PIL import Image
 
-MODEL = "claude-opus-5-5"
+import core
+
+CLAUDE = core.RULES["claude"]  # 모델·가격은 규칙.json (매주 자동 점검)
+MODEL = CLAUDE["model"]
 UA = "LongAutoUpload/1.0 (https://github.com/kjg0898-dot/LongAutoUpload)"  # 위키미디어는 이름 없는 요청을 막는다
 COMMONS = "https://commons.wikimedia.org/w/api.php"
-PRICE = (4, 20)  # claude-opus-5-5 달러 / 100만 토큰 (입력, 출력)
+PRICE = (CLAUDE["price_in"], CLAUDE["price_out"])  # 달러 / 100만 토큰 (입력, 출력)
 USAGE = []  # 이번에 켠 뒤 쓴 토큰 [(입력, 출력)] — 실제 비용 확인용
 
 
@@ -41,8 +44,8 @@ def ask(cl, content, schema):
     try:
         res = cl.beta.messages.create(
             model=MODEL, max_tokens=16000,
-            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
-            output_config={"effort": "medium", "format": {"type": "json_schema", "schema": schema}},
+            betas=[CLAUDE["fallback_beta"]], fallbacks="default",
+            output_config={"effort": CLAUDE["effort"], "format": {"type": "json_schema", "schema": schema}},
             messages=[{"role": "user", "content": content}])
     except anthropic.AuthenticationError:
         raise RuntimeError("Claude API 키가 맞지 않습니다. 설정 → 고급 설정에서 키를 확인해주세요.") from None
@@ -152,12 +155,14 @@ def score(cl, img, title, text, desc, examples=(), checks=(), spots=()):
     content.append({"type": "text", "text": (
         f"유튜브 역사·전쟁사 채널의 썸네일을 평가합니다.\n영상 제목: {title}\n썸네일 문구: {text}\n영상 설명: {desc[:500]}\n"
         "프로그램이 잰 값: " + "; ".join(m for _, m in checks) + "\n\n"
-        "1) policy_ok: YouTube 정책상 문제가 없는가 (피·상처·시신이 드러남, 극단주의 상징이 중심, 선정성, 욕설, 영상에 없는 약속이면 false). "
+        "1) policy_ok: YouTube 썸네일 정책상 문제가 없는가 (충격·혐오를 노린 폭력, 피·상처·시신, 극단주의 상징이 중심, 선정성·노출, "
+        "저속한 글자, 영상에 없는 것을 보여주는 오해 소지, 다른 채널·인물 사칭이면 false). "
         "policy_reason: false면 이유.\n"
         "2) 항목별 점수 (0~배점): " + ", ".join(f"{k} = {d} (0~{w})" for k, d, w in RUBRIC) + "\n"
         "3) tips: 고치면 좋은 점 1~3개, 짧은 한국어로. 이미 좋으면 빈 목록.\n"
-        "4) title_score: 영상 제목만 따로 0~100점 (검색·추천에서 눌러보고 싶은가: 앞 40자 안에 핵심 말, 구체적인 숫자·인물·사건, "
-        "궁금증, 과장·낚시 없음, 썸네일 문구와 겹치지 않고 서로 보완). title_tips: 제목을 고치면 좋은 점 0~2개, 짧은 한국어로.\n"
+        "4) title_score: 영상 제목만 따로 0~100점 (YouTube 공식 팁 기준: 영상 내용과 정확히 맞음, 짧고 가장 중요한 말을 앞에(앞 40자), "
+        "채널 이름·회차 번호는 끝에, 대문자·이모지는 절제, 검색형(무엇을 볼지 분명) 또는 궁금증형, 구체적인 숫자·인물·사건, "
+        "과장·낚시 없음, 썸네일 문구와 겹치지 않고 서로 보완). title_tips: 제목을 고치면 좋은 점 0~2개, 짧은 한국어로.\n"
         "5) inset_ok: 썸네일 위에 따로 얹은 네모난 실제 사진이 배경 그림 속 인물의 얼굴이나 핵심 대상을 가리지 않으면 true, "
         "가리면 false (얹은 사진이 없으면 true)."
         + ("\n6) better_spot: inset_ok가 false일 때, 같은 사진을 옮기면 배경 인물 얼굴·핵심 대상과 글자를 가리지 않을 자리 번호 "

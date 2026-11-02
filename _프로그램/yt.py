@@ -5,7 +5,7 @@ import random
 import time
 from datetime import datetime, timezone
 
-from core import PROG, parse_dt
+from core import PROG, YT, parse_dt
 
 SECRET = PROG / "client_secret.json"
 
@@ -21,8 +21,9 @@ SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl",
 READONLY_SNIPPET = {"thumbnails", "channelId", "channelTitle", "publishedAt", "liveBroadcastContent", "localized"}
 WRITABLE_STATUS = {"privacyStatus", "publishAt", "license", "embeddable", "publicStatsViewable",
                    "selfDeclaredMadeForKids", "containsSyntheticMedia"}
-# 할당량 (단위/회): 목록 조회 1, 수정·썸네일·댓글·재생목록 추가 50. 하루 10,000 (모든 채널 합산)
-COST_FILL, COST_SCHEDULE, DAILY_QUOTA = 200, 50, 10000
+# 할당량 (단위/회, 규칙.json): 목록 조회 1, 수정·썸네일·댓글·재생목록 추가 50. 하루 10,000 (모든 채널 합산)
+COST_FILL = YT["cost_update"] + YT["cost_thumbnail"] + YT["cost_comment"] + YT["cost_playlist"]
+COST_SCHEDULE, DAILY_QUOTA = YT["cost_update"], YT["daily_quota"]
 
 
 class NotLoggedIn(Exception):

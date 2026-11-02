@@ -105,7 +105,7 @@ def _spots(tpl):
 MIN_PHOTO = 180_000  # 실제 사진 최소 넓이(px²): 화면의 약 20%. 이보다 작으면 썸네일이 작게 보일 때 무엇인지 안 보임
 
 
-def _place(region, anchor, photo_ratio, size):
+def _place(region, anchor, photo_ratio, size, min_area=MIN_PHOTO):
     """자리 안에 사진 비율대로 (세로 사진은 세로로 길게, 가로 사진은 넓게) size배 크기로 놓을 칸 [x,y,w,h]."""
     rx, ry, rw, rh = region
     ar = min(1.9, max(0.75, photo_ratio))  # 너무 길쭉한 사진은 이만큼만 잘라 맞춤
@@ -114,7 +114,7 @@ def _place(region, anchor, photo_ratio, size):
     if h > rh * size:
         h = rh * size
         w = h * ar
-    grow = min((MIN_PHOTO / (w * h)) ** 0.5, rw / w, rh / h)  # 휴대폰 작은 화면에서도 알아보게 최소 크기까지 (자리 안에서)
+    grow = min((min_area / (w * h)) ** 0.5, rw / w, rh / h)  # 휴대폰 작은 화면에서도 알아보게 최소 크기까지 (자리 안에서)
     if grow > 1:
         w, h = w * grow, h * grow
     x = rx + rw - w if anchor in ("tr", "br") else rx + (rw - w) / 2 if anchor == "t" else rx
@@ -148,14 +148,49 @@ def _line_boxes(lines, font, box, side, t, stroke):
     return out
 
 
+FINAL_SCALE = max(1, core.YT["thumb_width"] // 1280)  # 최종 썸네일 3840x2160 (YouTube 권장, 규칙.json). 미리보기는 1280x720
+
+
+def _scaled(tpl, s):
+    """틀의 px 값(1280x720 기준)을 s배로."""
+    if s == 1:
+        return tpl
+    tpl = json.loads(json.dumps(tpl))
+    t = tpl["text"]
+    t["box"] = [v * s for v in t["box"]]
+    for k in ("size_max", "size_min", "stroke", "glow"):
+        if t.get(k):
+            t[k] = t[k] * s
+    for lay in tpl.get("layouts") or []:
+        if "box" in lay:
+            lay["box"] = [v * s for v in lay["box"]]
+    inset = tpl.get("inset")
+    if inset:
+        if inset.get("box"):
+            inset["box"] = [v * s for v in inset["box"]]
+        if inset.get("boxes"):
+            inset["boxes"] = [{**b, "box": [v * s for v in b["box"]]} if isinstance(b, dict) else [v * s for v in b]
+                              for b in inset["boxes"]]
+        if inset.get("border"):
+            inset["border"] *= s
+    logo = tpl.get("logo")
+    if logo:
+        logo["pos"] = [v * s for v in logo.get("pos", [0, 0])]
+        if logo.get("width"):
+            logo["width"] *= s
+    if (tpl.get("border") or {}).get("width"):
+        tpl["border"]["width"] *= s
+    return tpl
+
+
 def _box_xyxy(box):
     x, y, w, h = box
     return (x, y, x + w, y + h)
 
 
-def _mirror(box, side):
+def _mirror(box, side, width=SIZE[0]):
     x, y, w, h = box
-    return [SIZE[0] - x - w, y, w, h] if side == "right" else [x, y, w, h]
+    return [width - x - w, y, w, h] if side == "right" else [x, y, w, h]
 
 
 def _segments(line, accents):
@@ -195,7 +230,7 @@ def _split(line):
 
 def _fit(lines, font_file, box, t, stroke):
     """박스에 들어가는 가장 큰 글자 크기."""
-    for size in range(t["size_max"], t["size_min"] - 1, -2):
+    for size in range(t["size_max"], t["size_min"] - 1, -max(2, t["size_max"] // 66)):
         font = ImageFont.truetype(str(font_file), size)
         widths = [font.getbbox(line, stroke_width=stroke)[2] for line in lines]
         height = size * len(lines) * (1 + t["line_gap"]) + stroke * 2
@@ -204,12 +239,13 @@ def _fit(lines, font_file, box, t, stroke):
     raise ValueError(f"문구가 너무 깁니다 (가장 작은 글자 {t['size_min']}로도 안 들어감). 줄을 '/'로 나누거나 줄여주세요.")
 
 
-def compose(ch, base, text, plan=None, photo=None, rnd=None):
+def compose(ch, base, text, plan=None, photo=None, rnd=None, scale=1):
     """썸네일 그림. plan: {'side': 'left'|'right'|'center', 'accents': [...]} (없으면 무작위·마지막 줄 강조).
     틀에서 고를 수 있는 것: 글자 가운데 정렬(sides ["center"]), 줄마다 색(styles.line_fills), 바깥 테두리(border),
     아래쪽 그늘(shade_dir "bottom"), 실제 사진 자리 여러 개(inset.boxes, 매번 하나), 기본 로고(로고_기본.png)."""
     rnd = rnd or random.Random()
-    tpl, plan = load_template(ch), plan or {}
+    tpl, plan = _scaled(load_template(ch), scale), plan or {}  # scale 3이면 3840x2160 (틀 숫자는 1280x720 기준)
+    W, H = SIZE[0] * scale, SIZE[1] * scale
     t = dict(tpl["text"])
     lines = [s.strip() for s in (text or "").replace("\\n", "/").split("/") if s.strip()]  # 비면 글자 없이 (후보 미리보기)
     if plan.get("lines") and _squash(plan["lines"]) == _squash(lines) and _even(plan["lines"]) >= min(_even(lines), 0.6):
@@ -240,17 +276,17 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
     jit = tpl.get("jitter", 0)
     mirror = not layouts  # 글자 자리가 정해진 틀은 좌우를 뒤집지 않는다
 
-    canvas = _cover(_image(base), *SIZE).convert("RGBA")
+    canvas = _cover(_image(base), W, H).convert("RGBA")
     if tpl.get("shade"):  # 글자 쪽으로 갈수록 어두워지는 그늘 (글자가 잘 읽히게)
         way = (lay.get("shade") if layouts else None) or ("bottom" if tpl.get("shade_dir") == "bottom" or side == "center" else side)
         vertical = way in ("bottom", "top")
-        shade = Image.new("L", SIZE)
-        n = SIZE[1] if vertical else SIZE[0]
+        shade = Image.new("L", (W, H))
+        n = H if vertical else W
         for i in range(n):
             k = i / n if way in ("bottom", "right") else 1 - i / n
-            band = (0, i, SIZE[0], i + 1) if vertical else (i, 0, i + 1, SIZE[1])
+            band = (0, i, W, i + 1) if vertical else (i, 0, i + 1, H)
             shade.paste(int(255 * tpl["shade"] * max(0.0, k * 1.6 - 0.6)), band)
-        canvas = Image.composite(Image.new("RGBA", SIZE, (0, 0, 0, 255)), canvas, shade)
+        canvas = Image.composite(Image.new("RGBA", (W, H), (0, 0, 0, 255)), canvas, shade)
 
     logo = tpl.get("logo") or {}
     logo_file = next((f for f in (template_dir(ch) / logo.get("file", ""), template_dir(ch) / "로고_기본.png")
@@ -260,9 +296,11 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
         mark = Image.open(logo_file).convert("RGBA")
         if logo.get("width"):
             mark = mark.resize((logo["width"], round(mark.height * logo["width"] / mark.width)), Image.LANCZOS)
+        elif scale != 1:  # 로고 파일 크기는 1280x720 기준
+            mark = mark.resize((mark.width * scale, mark.height * scale), Image.LANCZOS)
 
     box = [round(v * (1 + rnd.uniform(-jit, jit))) if i < 2 else v for i, v in enumerate(t["box"])]
-    box = _mirror(box, side) if mirror and side != "center" else box
+    box = _mirror(box, side, W) if mirror and side != "center" else box
     stroke = t["stroke"]
     font = None
     while lines:  # 안 들어가면 가장 긴 줄을 가운데 가까운 띄어쓰기에서 나눠 다시 (/ 없이 쓴 긴 문구)
@@ -300,13 +338,13 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
 
         def placed(k, s):
             _, region, anchor = _spot(spots[k], k)
-            b = _place(region, anchor, ratio, s)
-            return _mirror(b, side) if mirror and side != "center" else b  # 사진 칸은 '글자 왼쪽' 기준
+            b = _place(region, anchor, ratio, s, MIN_PHOTO * scale * scale)
+            return _mirror(b, side, W) if mirror and side != "center" else b  # 사진 칸은 '글자 왼쪽' 기준
         ok = {}  # 자리마다: 글자가 사진을 MAX_COVER 넘게 가리지 않는 가장 큰 크기 (휴대폰에서도 보이는 크기 이상만)
         for k in allowed:
             for s in (size, size - 0.05, size - 0.1, size - 0.15, size - 0.2):
                 b = placed(k, max(0.7, s))
-                if _covered(b, text_boxes) <= MAX_COVER and b[2] * b[3] >= 0.9 * MIN_PHOTO:
+                if _covered(b, text_boxes) <= MAX_COVER and b[2] * b[3] >= 0.9 * MIN_PHOTO * scale * scale:
                     ok[k] = max(0.7, s)
                     break
         ok = {k: s for k, s in ok.items() if _spot(spots[k], k)[0] not in plan.get("avoid_spots", ())} or ok  # 점수에서 걸린 자리는 빼고
@@ -325,7 +363,7 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
         if mark:  # 채널 마크를 가리지 않게 마크 아래로
             lx, ly = logo["pos"]
             if x < lx + mark.width and lx < x + w and y < ly + mark.height and ly < y + h:
-                y = ly + mark.height + 24
+                y = ly + mark.height + 24 * scale
         photo_info = {"spot": _spot(spots[i], i)[0], "size": round(size, 2), "box": [x, y, w, h],
                       "covered": round(_covered([x, y, w, h], text_boxes), 2)}
         pic = _cover(src, w, h)
@@ -336,11 +374,11 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
         if inset.get("shadow", True):
             shadow = Image.new("RGBA", framed.size, (0, 0, 0, 0))
             shadow.paste((0, 0, 0, 150), mask=framed.split()[3])
-            canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(10)), (x - b + 10, y - b + 12))
+            canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(10 * scale)), (x - b + 10 * scale, y - b + 12 * scale))
         canvas.alpha_composite(framed, (x - b, y - b))
 
     glow = t.get("glow", 0)
-    layer = Image.new("RGBA", SIZE, (0, 0, 0, 0)) if glow and lines else None
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0)) if glow and lines else None
     draw = ImageDraw.Draw(layer or canvas)
     step = font.size * (1 + t["line_gap"]) if font else 0
     total = step * len(lines)
@@ -353,9 +391,9 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
         base_fill = fills[min(n, len(fills) - 1)] if fills else style["fill"]
         for seg, accent in _segments(line, accents):
             if layer:  # 번짐용: 굵은 검은 글자를 따로 그려 흐리게
-                draw.text((x, y + 4), seg, font=font, fill=(0, 0, 0, 230), stroke_width=stroke + glow // 2, stroke_fill=(0, 0, 0, 230))
+                draw.text((x, y + 4 * scale), seg, font=font, fill=(0, 0, 0, 230), stroke_width=stroke + glow // 2, stroke_fill=(0, 0, 0, 230))
             else:
-                draw.text((x + 6, y + 8), seg, font=font, fill=(0, 0, 0, 140), stroke_width=stroke, stroke_fill=(0, 0, 0, 140))
+                draw.text((x + 6 * scale, y + 8 * scale), seg, font=font, fill=(0, 0, 0, 140), stroke_width=stroke, stroke_fill=(0, 0, 0, 140))
             x += font.getlength(seg)
         y += step
     if layer:
@@ -376,14 +414,16 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
 
     border = tpl.get("border")
     if border and border.get("width"):  # 바깥 테두리 (채널 마크는 그 위에)
-        ImageDraw.Draw(canvas).rectangle((0, 0, SIZE[0] - 1, SIZE[1] - 1), outline=border["color"], width=border["width"])
+        ImageDraw.Draw(canvas).rectangle((0, 0, W - 1, H - 1), outline=border["color"], width=border["width"])
 
     if mark:  # 채널 마크: 늘 같은 파일·같은 자리·같은 크기, 맨 위에
         canvas.alpha_composite(mark, tuple(logo["pos"]))
     out = canvas.convert("RGB")
-    out.info["layout"] = {"lines": lines, "boxes": boxes, "font": font_file.name, "side": side, "style": si,
-                          "name": plan.get("layout") or side, "photo": photo_info,
-                          "glyph": (lambda b: b[3] - b[1])(font.getbbox("가")) if font else 0,
+    if photo_info:
+        photo_info["box"] = [round(v / scale) for v in photo_info["box"]]
+    out.info["layout"] = {"lines": lines, "boxes": [tuple(v / scale for v in b) for b in boxes], "font": font_file.name,
+                          "side": side, "style": si, "name": plan.get("layout") or side, "photo": photo_info,
+                          "glyph": round((lambda b: b[3] - b[1])(font.getbbox("가")) / scale) if font else 0,
                           "colors": [style.get("accent"), *(fills or [style.get("fill")])], "stroke": style.get("stroke")}
     return out
 
@@ -435,14 +475,14 @@ def check(img):
 
 
 def save(img, path):
-    """YouTube 한도(2MB) 안으로 JPG 저장."""
-    for quality in (92, 88, 82, 75, 68):
+    """YouTube 한도(50MB, 2026-09-14부터) 안으로 JPG 저장."""
+    for quality in (95, 90, 85, 75, 68):
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=quality, optimize=True)
         if buf.tell() <= core.THUMB_MAX:
             Path(path).write_bytes(buf.getvalue())
             return path
-    raise ValueError("썸네일을 2MB 아래로 줄이지 못했습니다.")
+    raise ValueError("썸네일을 YouTube 한도(50MB) 아래로 줄이지 못했습니다.")
 
 
 def fetch_photo(folder, num, title, desc, text, key="", log=print, force=False):
@@ -514,7 +554,7 @@ def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=
             plan = ai.plan(ai.client(key), base, text, title, desc, options(ch, tpl, ratio), recent[-4:], ctr_text(stats), photo)
         else:  # Claude 없이: 최근 두 편에 쓴 글자 자리는 피하고, 클릭률이 좋았던 자리를 더 자주
             plan = {"avoid": [r.get("layout") for r in recent[-2:]], "boost": boost(stats.get("layout", {}))}
-        img = compose(ch, base, text, plan, photo, rnd)
+        img = compose(ch, base, text, plan, photo, rnd, FINAL_SCALE)
         lay = img.info["layout"]
         used = {"layout": lay["name"], "font": lay["font"], "style": lay["style"], "lines": lay["lines"],
                 "photo": (lay["photo"] or {}).get("spot"), "photo_size": (lay["photo"] or {}).get("size")}
@@ -535,11 +575,11 @@ def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=
                 if attempt == 1 and isinstance(better, int) and better >= 0:
                     log(f"    {num}번: 실제 사진이 배경을 가려 다른 자리({better}번)로 다시 만듭니다")
                     plan = plan | {"avoid_spots": plan.get("avoid_spots", []) + [spot], "spot": better}
-                    img = compose(ch, base, text, plan, photo, rnd)
+                    img = compose(ch, base, text, plan, photo, rnd, FINAL_SCALE)
                 else:
                     log(f"    {num}번: 실제 사진을 둘 자리가 마땅치 않아 사진 없이 만듭니다")
                     plan = plan | {"no_photo": True}
-                    img = compose(ch, base, text, plan, None, rnd)
+                    img = compose(ch, base, text, plan, None, rnd, FINAL_SCALE)
                 checks, points = check(img)
                 review = ai.score(ai.client(key), img, title, text, desc, examples(ch), checks, spot_list)
                 lay = img.info["layout"]
@@ -628,15 +668,18 @@ def add_reach(ch, reports):
     return data
 
 
-def ctr_stats(ch, min_impr=300):
+def ctr_stats(ch, min_impr=300, first_days=2):
     """조합별 클릭률: {'layout': {'아래_가운데': (평균 %, 영상 수)}, 'font': …, 'style': …}.
-    노출이 min_impr번 넘은 영상만, 영상마다 같은 무게로 (조회수 큰 한 편이 다 정하지 않게)."""
+    YouTube 권장대로 공개 직후(첫 first_days일, 약 24~48시간)의 클릭률로 비교 (오래된 영상일수록 낮아지는 영향을 뺌).
+    노출이 min_impr번 넘은 영상만, 영상마다 같은 무게로 (조회수 큰 한 편이 다 정하지 않게).
+    shortcut: 홈·추천 화면만 따로 보려면 channel_reach_combined_a1 보고서가 필요, 지금은 전체 노출 기준"""
     data = load_ctr(ch)
     rates = {}
     for vid, days in data["days"].items():
-        impr = sum(i for i, _ in days.values())
+        early = [days[d] for d in sorted(days)[:first_days]]
+        impr = sum(i for i, _ in early)
         if vid in data["designs"] and impr >= min_impr:
-            rates[vid] = sum(i * c for i, c in days.values()) / impr
+            rates[vid] = sum(i * c for i, c in early) / impr
     # shortcut: 보고서의 클릭률이 비율(0.05)인지 퍼센트(5)인지 문서에 없어, 1보다 큰 값이 있으면 퍼센트로 본다
     scale = 1 if any(r > 1 for r in rates.values()) else 100
     out = {}

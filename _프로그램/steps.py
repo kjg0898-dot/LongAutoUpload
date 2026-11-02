@@ -277,7 +277,7 @@ def _compose(ch, r, original):
         if not thumb.exists():
             raise FileNotFoundError(f"썸네일 파일이 없습니다: {r['썸네일']}")
         if thumb.stat().st_size > core.THUMB_MAX:
-            raise ValueError(f"썸네일이 2MB를 넘습니다: {r['썸네일']}")
+            raise ValueError(f"썸네일이 {core.YT['thumb_max_mb']}MB를 넘습니다: {r['썸네일']}")
     snippet_over, status_over = core.overrides(ch)
     # 댓글을 달려면 일부공개여야 한다
     return {"title": title, "description": desc, "tags": tags} | snippet_over, status_over | {"privacyStatus": "unlisted"}
@@ -633,7 +633,7 @@ def thumb_test(ui):
         note(f"  Claude 요청 {len(used)}번, 입력 {sum(i for i, _ in used):,} · 출력 {sum(o for _, o in used):,} 토큰 → 약 ${ai.cost(used):.3f}")
     image = core.PROG / "썸네일_시험.jpg"
     try:
-        thumbs.save(thumbs.compose(ch, base, text, plan, photo), image)
+        thumbs.save(thumbs.compose(ch, base, text, plan, photo, scale=thumbs.FINAL_SCALE), image)
         note(f"✓ 썸네일을 만들었습니다 ({time.time() - start:.0f}초): {image}")
     except Exception as e:
         image = None

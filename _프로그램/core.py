@@ -22,7 +22,26 @@ KST = timezone(timedelta(hours=9))  # 한국은 서머타임이 없어서 고정
 
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".wmv", ".flv"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png"}
-THUMB_MAX = 2 * 1024 * 1024  # YouTube 썸네일 한도
+# YouTube·Claude 규칙 값: 규칙.json (매주 자동 점검이 공식 문서와 맞춰 고치고, 자동 업데이트로 받음). 없으면 아래 기본값
+RULES_DEFAULT = {
+    "youtube": {"thumb_max_mb": 50, "thumb_width": 3840, "thumb_min_width": 640, "title_max": 100, "desc_max_bytes": 5000,
+                "tags_max": 500, "daily_quota": 10000, "cost_update": 50, "cost_thumbnail": 50, "cost_comment": 50,
+                "cost_playlist": 50},
+    "claude": {"model": "claude-opus-5-5", "price_in": 4, "price_out": 20,
+               "fallback_beta": "server-side-fallback-2026-07-01", "effort": "medium"}}
+
+
+def load_rules():
+    try:
+        data = json.loads((PROG / "규칙.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    return {k: v | {x: y for x, y in (data.get(k) or {}).items() if x in v} for k, v in RULES_DEFAULT.items()}
+
+
+RULES = load_rules()
+YT = RULES["youtube"]
+THUMB_MAX = YT["thumb_max_mb"] * 1024 * 1024  # YouTube 썸네일 한도 (2026-09-14부터 50MB)
 
 KEEP = "건들지 않음"
 MODES = ["맨 앞", "맨 뒤", "기준 글자 앞", "기준 글자 뒤", "표시 문자 바꾸기"]
@@ -253,9 +272,27 @@ def merge_tags(existing, new, mode):
         if t and t.lower() not in seen:
             seen.add(t.lower())
             out.append(t)
-    while tags_len(out) > 500:
+    while tags_len(out) > YT["tags_max"]:
         out.pop()
     return out
+
+
+def thumb_problem(path):
+    """직접 만든 썸네일이 YouTube 규칙에 맞는지. 문제가 있으면 한 줄 설명, 없으면 ''."""
+    path = Path(path)
+    if path.stat().st_size > THUMB_MAX:
+        return f"썸네일이 {YT['thumb_max_mb']}MB를 넘음"
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            w, h = im.size
+    except Exception:
+        return ""  # 그림을 못 열면 올릴 때 YouTube가 알려준다
+    if w < YT["thumb_min_width"]:
+        return f"썸네일이 너무 작음 (가로 {w}px, {YT['thumb_min_width']}px 이상, 3840x2160 권장)"
+    if abs(w / h - 16 / 9) > 0.05:
+        return f"썸네일 비율이 16:9가 아님 ({w}x{h}) — 위아래나 양옆이 잘려 보일 수 있음"
+    return ""
 
 
 def check_text(title, desc):
@@ -263,10 +300,10 @@ def check_text(title, desc):
         raise ValueError("제목이 비어 있습니다.")
     if "\n" in title:
         raise ValueError(f"제목에 줄바꿈이 있습니다: {title[:40]}…")
-    if len(title) > 100:
-        raise ValueError(f"제목이 100자를 넘습니다 ({len(title)}자): {title}")
-    if len(desc.encode("utf-8")) > 5000:
-        raise ValueError("설명이 YouTube 한도(5000바이트)를 넘습니다.")
+    if len(title) > YT["title_max"]:
+        raise ValueError(f"제목이 {YT['title_max']}자를 넘습니다 ({len(title)}자): {title}")
+    if len(desc.encode("utf-8")) > YT["desc_max_bytes"]:
+        raise ValueError(f"설명이 YouTube 한도({YT['desc_max_bytes']}바이트)를 넘습니다.")
     if re.search(r"[<>]", title + desc):
         raise ValueError("제목·설명에 < 또는 > 기호는 쓸 수 없습니다.")
 
@@ -451,7 +488,7 @@ def seo_folder(ch, today=None):
 def worksheet_text(entries):
     """작업표: 썸네일을 만들 때 볼 것만 (제목 후보, 썸네일 문구, 그림 프롬프트, 저장 이름)."""
     out = ["작업표 — 썸네일 만들 때 보는 정리본 (프로그램이 만든 파일이라 고쳐도 반영되지 않습니다)",
-           "· 썸네일은 이름에 순번 숫자를 넣어 저장하세요. 예) 1.png, 3번 썸네일.jpg (jpg·png, 2MB 이하)",
+           f"· 썸네일은 이름에 순번 숫자를 넣어 저장하세요. 예) 1.png, 3번 썸네일.jpg (jpg·png, {YT['thumb_max_mb']}MB 이하, 16:9, 가로 3840 권장)",
            "· 제목은 '2. 자동 처리'를 누르면 썸네일을 보면서 고를 수 있습니다.", ""]
     for e in sorted(entries, key=lambda e: e["num"] if e["num"] is not None else 0):
         out += ["", f"==================== 순번 {e['num']} ====================", "제목 후보 (▶ 추천)"]
@@ -615,8 +652,8 @@ def build_rows(cfg, old_rows, drafts=None, uploaded=None):
                             problems.append(f"{name}: 썸네일 후보 그림을 못 찾음 (준비 화면에서 넣거나 채널 폴더/{MATERIAL}/ 에 같은 번호)")
                     elif not row["썸네일"]:
                         problems.append(f"{name}: 썸네일을 못 찾음 (없이 올리려면 엑셀 썸네일 칸에 '없음')")
-                    elif thumb and thumb.stat().st_size > THUMB_MAX:
-                        problems.append(f"{name}: 썸네일이 2MB를 넘음 ({thumb.name})")
+                    elif thumb and (bad := thumb_problem(thumb)):
+                        problems.append(f"{name}: {bad} ({thumb.name})")
                 rows.append(row)
                 batch_rows.append(row)
             pending = [r for r in batch_rows if r["상태"] == ""]

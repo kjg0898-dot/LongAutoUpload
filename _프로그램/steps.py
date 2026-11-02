@@ -460,6 +460,12 @@ def remember(folder, num, **fields):
     core.save_prep(folder, data)
 
 
+# 그림을 다른 곳(Gemini 등)에서 만들 때 덧붙이는 구도 안내: 프로그램이 글자·채널 마크·실제 사진을 얹을 자리
+PROMPT_TIP = ("구도: 16:9 가로. 주인공은 1~2명만 크게, 얼굴과 표정이 또렷하게 화면 위쪽 3분의 2 안에. "
+              "화면 아래쪽 3분의 1과 왼쪽 위 모서리는 하늘·땅·그늘 같은 단순한 배경으로 비워 둘 것 (글자와 채널 마크 자리). "
+              "배경은 살짝 흐리게 해서 주인공이 도드라지게, 밝고 대비가 강하게. 이미지 안에 글자·로고·워터마크 없음.")
+
+
 def prep_items(ch):
     """이 채널의 마지막 묶음에서 SEO 항목마다: 순번·SEO 내용 + 고른 것 + 후보 그림 + 실제 사진 + 최종 썸네일."""
     dirs = core.channel_dirs(ch)
@@ -476,6 +482,7 @@ def prep_items(ch):
                     "제목": p.get("제목") or e["title"],
                     "썸네일문구": p.get("썸네일문구") or (texts[e.get("thumb_pick", 0)] if texts else ""),
                     "설명": p.get("설명") or e["desc"], "고정댓글": p.get("고정댓글") or e["comment"],
+                    "그림요청": e.get("thumb_prompt", ""),
                     "선택": core.material_for(folder, e["num"]), "후보": core.candidates(folder, e["num"]),
                     "실제사진": photo if photo.exists() else None, "최종": final if final.exists() else None})
     return folder, out

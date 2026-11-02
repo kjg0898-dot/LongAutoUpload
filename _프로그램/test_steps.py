@@ -760,6 +760,9 @@ SEO2 = "".join(f"""[2026-10-21 19:24] 행 {n} | 순번 {n} | 제목: 원본 {n}
 ---
 고정 댓글
 댓글 {n}
+---
+썸네일 이미지
+추천 프롬프트: 장면 {n}, 텍스트 없음
 """ for n in (1, 2))
 
 
@@ -789,6 +792,7 @@ def test_prep_flow():
         _, items = steps.prep_items(ch)
         assert [(i["num"], len(i["후보"])) for i in items] == [(1, 2), (2, 1)], items
         assert items[0]["제목"] == "첫째 제목 1" and items[0]["썸네일문구"] == "문구 1 / 둘째 줄"
+        assert items[0]["그림요청"] == "장면 1, 텍스트 없음" and items[0]["고정댓글"] == "댓글 1"  # 그림 프롬프트 복사용
         steps.remember(folder, 1, 선택=core.rel(items[0]["후보"][1]).split("/", 2)[2], 제목="고른 제목", 썸네일문구="고친 / 문구")
         _, items = steps.prep_items(ch)
         assert items[0]["선택"].name == "1번 b.png" and items[0]["제목"] == "고른 제목"

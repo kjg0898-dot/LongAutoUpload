@@ -876,10 +876,19 @@ class PrepWindow:
             n = len(item["후보"])
             ttk.Button(c["pics"], text="그림 넣기", command=lambda: self.add(c)).grid(
                 row=max(n - 1, 0) // 4, column=4 if n else 1, padx=6, sticky="w")
+            if item.get("그림요청"):
+                ttk.Button(c["pics"], text="그림 프롬프트 복사", command=lambda: self.copy_prompt(c)).grid(
+                    row=max(n - 1, 0) // 4 + 1, column=4 if n else 1, padx=6, sticky="w")
         photo = item["실제사진"]
         note = json.loads((photo.with_suffix(".json")).read_text("utf-8")).get("credit", "") if photo and photo.with_suffix(".json").exists() else ""
         c["photo_note"].config(text=f"실제 사진: {note}" if photo else ("실제 사진: 아직 (API 키가 있으면 자동으로 찾음)"
                                                                     if c["ch"]["thumb_auto"] else ""))
+
+    def copy_prompt(self, c):
+        """SEO의 썸네일 그림 프롬프트 + 글자·채널 마크 자리를 비워 두라는 구도 안내 → 클립보드 (Gemini 등에 붙여넣기)."""
+        self.win.clipboard_clear()
+        self.win.clipboard_append(c["item"]["그림요청"].rstrip(" .") + ". " + self.app.steps.PROMPT_TIP)
+        self.app.log(f"[{c['ch']['name']}] {c['item']['num']}번 그림 프롬프트를 복사했습니다 — Gemini 등에 붙여넣으세요.")
 
     def render(self, label, c, path):
         """미리보기를 작업 스레드에서 만들고 화면에는 메인 스레드에서 붙인다."""

@@ -74,6 +74,12 @@ def build_client(creds):
     return build("youtube", "v3", credentials=creds, cache_discovery=False)
 
 
+def avatar_url(yt):
+    """내 채널 프로필 사진 주소 (가장 큰 것, 보통 800x800)."""
+    th = execute(yt.channels().list(part="snippet", mine=True))["items"][0]["snippet"].get("thumbnails", {})
+    return next((th[k]["url"] for k in ("high", "medium", "default") if k in th), None)
+
+
 def whoami(yt):
     ch = execute(yt.channels().list(part="snippet", mine=True))["items"][0]
     return ch["id"], ch["snippet"]["title"]

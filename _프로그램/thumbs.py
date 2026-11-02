@@ -20,7 +20,8 @@ SIZE = (1280, 720)
 
 # 틀.json이 없을 때 쓰는 기본 틀. 박스는 [x, y, 너비, 높이], 글자가 '왼쪽'일 때 기준 (오른쪽은 좌우를 뒤집어 씀)
 DEFAULT_TEMPLATE = {
-    "font": "",  # 틀 폴더의 폰트 파일 이름. 비우면 맑은 고딕 굵게
+    "font": "",  # 이 글씨체 하나만 쓰려면 파일 이름 (틀 폴더나 폰트 폴더)
+    "fonts": ["Jua-Regular.ttf", "BlackHanSans-Regular.ttf", "GothicA1-Black.ttf", "Hahmlet-Black.ttf"],  # 돌아가며 (프로그램과 함께 오는 굵은 무료 폰트)
     "text": {"box": [56, 150, 700, 470], "valign": "center", "size_max": 150, "size_min": 54, "max_lines": 3,
              "stroke": 12, "line_gap": 0.06, "sides": ["left", "right"]},
     "styles": [{"fill": "#FFFFFF", "accent": "#FFE400", "stroke": "#000000"},
@@ -35,8 +36,98 @@ WINDOWS_FONTS = [Path("C:/Windows/Fonts/malgunbd.ttf"), Path("C:/Windows/Fonts/m
 OTHER_FONTS = [Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"), Path("/System/Library/Fonts/AppleSDGothicNeo.ttc")]
 
 
+FONT_DIR = core.PROG / "폰트"
+MIN_STROKE = 9.0  # 평균 획 굵기(px, 100px 글자 기준). 이보다 얇은 글씨체는 안 씀 (중장년 시청자: 작은 화면에서 잘 안 보임)
+FONT_NOTES = {"Jua-Regular.ttf": "둥근 굵은 고딕 (채널 기존 썸네일과 같은 느낌)", "BlackHanSans-Regular.ttf": "아주 굵은 제목체 (강한 인상)",
+              "GothicA1-Black.ttf": "굵은 고딕 (가장 또렷하게 읽힘)", "Hahmlet-Black.ttf": "굵은 명조 (전통·역사의 무게감)"}
+# 이 PC에 설치돼 있으면 함께 쓰는, 썸네일에 흔히 쓰는 굵은 무료 글꼴 (파일 이름 일부)
+SYSTEM_FONT_HINTS = ("jalnan", "bmhanna", "bmjua", "gmarketsansbold", "gmarketsanstfbold", "tmonmonsori", "scdream8", "scdream9",
+                     "nanumsquareeb", "nanumsquareextrabold", "nanumsquareroundeb", "h2hdrm", "hyheadline", "cafe24ohsquare")
+_STROKE = {}
+
+
+def _norm(name):
+    return re.sub(r"[\s_\-·.()\[\]]+", "", str(name)).lower()
+
+
 def template_dir(ch):
-    return TEMPLATE_DIR / ch["folder"]
+    """채널 틀 폴더: 채널 폴더 이름 → 채널 이름 → YouTube 채널 이름 순으로, 띄어쓰기·기호는 무시하고 찾는다
+    (예: 프로그램에는 '오십'인데 YouTube 이름이 '고전명언 인생조언'이어도 그 로고를 쓴다)."""
+    exact = TEMPLATE_DIR / ch["folder"]
+    if exact.is_dir() or not TEMPLATE_DIR.is_dir():
+        return exact
+    dirs = {_norm(d.name): d for d in TEMPLATE_DIR.iterdir() if d.is_dir()}
+    for name in (ch.get("folder"), ch.get("name"), ch.get("channel_title")):
+        if name and _norm(name) in dirs:
+            return dirs[_norm(name)]
+    return exact
+
+
+def logo_path(ch, logo):
+    """채널 마크 파일: 내가 넣은 로고.png가 먼저, 없으면 로고_채널.png(로그인 때 받은 YouTube 프로필 사진)와
+    로고_기본.png(프로그램과 함께 온 것) 중 해상도가 큰 것."""
+    if not logo.get("file"):
+        return None
+    d = template_dir(ch)
+    if (d / logo["file"]).is_file():
+        return d / logo["file"]
+    found = [f for f in (d / "로고_채널.png", d / "로고_기본.png") if f.is_file()]
+    if not found:
+        return None
+    def width(f):
+        try:
+            with Image.open(f) as im:
+                return im.width
+        except OSError:
+            return 0
+    return max(found, key=width)
+
+
+def save_channel_logo(ch, url):
+    """YouTube 프로필 사진(800px)을 받아 동그라미만 남겨 틀 폴더/로고_채널.png 로 (썸네일 마크를 또렷하게)."""
+    import urllib.request
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "LongAutoUpload"}), timeout=30) as res:
+        im = Image.open(io.BytesIO(res.read())).convert("RGBA")
+    s = min(im.size)
+    im = im.crop(((im.width - s) // 2, (im.height - s) // 2, (im.width + s) // 2, (im.height + s) // 2))
+    k = 4
+    mask = Image.new("L", (s * k, s * k), 0)
+    ImageDraw.Draw(mask).ellipse((k, k, (s - 1) * k, (s - 1) * k), fill=255)  # 프로필 사진은 가운데 원이 보이는 부분
+    im.putalpha(mask.resize((s, s), Image.LANCZOS))
+    if s > 460:
+        im = im.resize((460, 460), Image.LANCZOS)  # 4K 썸네일에서 447px로 쓰므로 이 정도면 충분
+    d = template_dir(ch)
+    d.mkdir(parents=True, exist_ok=True)
+    im.save(d / "로고_채널.png", optimize=True)
+    return d / "로고_채널.png"
+
+
+def stroke_px(path):
+    """글씨체의 평균 획 굵기(px): 100px로 '전투식량은 뭐였을까? 300발'을 써서 잉크 넓이 ÷ 가장자리 길이의 절반."""
+    if path not in _STROKE:
+        try:
+            font = ImageFont.truetype(str(path), 100)
+            im = Image.new("L", (1700, 200), 0)
+            ImageDraw.Draw(im).text((10, 30), "전투식량은 뭐였을까? 300발", font=font, fill=255)
+            px = im.load()
+            ink = edge = 0
+            for y in range(1, 199):
+                for x in range(1, 1699, 2):  # 가로는 한 칸 건너 (빠르게)
+                    a = px[x, y] > 127
+                    ink += a
+                    edge += (a != (px[x - 1, y] > 127)) + (a != (px[x, y - 1] > 127))
+            _STROKE[path] = 2 * ink / max(edge, 1)
+        except OSError:
+            _STROKE[path] = 0.0
+    return _STROKE[path]
+
+
+def system_fonts():
+    """이 PC(윈도우)에 설치된 굵은 썸네일용 글꼴 (SYSTEM_FONT_HINTS), 얇은 것은 뺌."""
+    dirs = [Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts", Path(os.environ.get("LOCALAPPDATA", "~")) / "Microsoft/Windows/Fonts"]
+    found = [p for d in dirs if d.is_dir() for p in sorted(d.iterdir())
+             if p.suffix.lower() in (".ttf", ".otf") and any(h in _norm(p.stem) for h in SYSTEM_FONT_HINTS)]
+    return [p for p in found if stroke_px(p) >= MIN_STROKE]
 
 
 def load_template(ch):
@@ -50,10 +141,16 @@ def load_template(ch):
 
 
 def fonts(ch, tpl):
-    """고를 수 있는 글씨체들: 틀 폴더에 넣은 폰트들, 없으면 틀이 정한 폰트들 (같은 파일이 여러 번이면 더 자주)."""
+    """고를 수 있는 글씨체들 (같은 파일이 여러 번이면 더 자주): 틀 폴더에 넣은 폰트 → 틀이 정한 폰트(틀 폴더나 폰트 폴더)
+    + 이 PC에 설치된 굵은 썸네일용 글꼴(틀이 정하지 않은 채널만). 얇은 글씨체(MIN_STROKE 미만)는 뺀다."""
     own = [p for p in sorted(template_dir(ch).glob("*")) if p.suffix.lower() in (".ttf", ".otf", ".ttc")]
-    given = [template_dir(ch) / f for f in (tpl.get("fonts") or ([tpl["font"]] if tpl.get("font") else []))]
-    return own or [p for p in given if p.exists()]
+    names = [tpl["font"]] if tpl.get("font") else tpl.get("fonts") or []
+    given = [next((p for p in (template_dir(ch) / f, FONT_DIR / Path(f).name) if p.exists()), None) for f in names]
+    group = own or [p for p in given if p]
+    if not own and names == DEFAULT_TEMPLATE["fonts"]:
+        group += system_fonts()
+    thick = [p for p in group if stroke_px(p) >= MIN_STROKE]
+    return thick or group
 
 
 def font_path(ch, tpl, rnd=None, pick=None):
@@ -289,8 +386,7 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None, scale=1):
         canvas = Image.composite(Image.new("RGBA", (W, H), (0, 0, 0, 255)), canvas, shade)
 
     logo = tpl.get("logo") or {}
-    logo_file = next((f for f in (template_dir(ch) / logo.get("file", ""), template_dir(ch) / "로고_기본.png")
-                      if logo.get("file") and f.is_file()), None)  # 내가 넣은 로고.png가 먼저, 없으면 채널에서 따 온 기본 로고
+    logo_file = logo_path(ch, logo)
     mark = None
     if logo_file:
         mark = Image.open(logo_file).convert("RGBA")
@@ -601,6 +697,7 @@ def options(ch, tpl, ratio=None):
     out = {"sides": tpl["text"]["sides"], "max_lines": tpl["text"]["max_lines"],
            "spots": [spot_text(i, s) for i, s in enumerate(_spots(tpl))],
            "fonts": sorted({p.name for p in fonts(ch, tpl)}),
+           "font_notes": {p.name: FONT_NOTES.get(p.name, "이 PC에 설치된 굵은 글꼴") for p in fonts(ch, tpl)},
            "styles": [s.get("_설명") or f"줄 색 {s.get('line_fills') or s.get('fill')}, 강조 {s.get('accent')}" for s in tpl["styles"]]}
     if tpl.get("layouts"):
         total = sum(x.get("weight", 1) for x in tpl["layouts"])

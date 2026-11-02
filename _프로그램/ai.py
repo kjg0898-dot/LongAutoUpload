@@ -99,7 +99,9 @@ def plan(cl, base, text, title, desc, opts, recent=(), ctr="", photo=None):
         ask_text.append("style: 글자 색 조합 번호. " + "; ".join(f"{i}번 {s}" for i, s in enumerate(styles)) + ". 배경 색과 잘 대비되는 것.")
         props["style"] = {"type": "integer"}
     if len(fonts) > 1:
-        ask_text.append("font: 글씨체 (" + ", ".join(fonts) + "). 주제 분위기에 맞게.")
+        notes = opts.get("font_notes", {})
+        ask_text.append("font: 글씨체 (" + ", ".join(f"{f}{' = ' + notes[f] if notes.get(f) else ''}" for f in fonts)
+                        + "). 주제 분위기에 맞게. 시청자가 중장년층이라 작은 화면에서도 잘 읽히는 것이 먼저.")
         props["font"] = {"type": "string", "enum": list(fonts)}
     ask_text.append("size: 글자 크기 배율 0.85~1.1 (문구가 짧고 강할수록 크게, 배경이 복잡하면 조금 작게).")
     props["size"] = {"type": "number"}

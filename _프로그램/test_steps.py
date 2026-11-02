@@ -709,6 +709,64 @@ def test_latest_rules():
         assert thumbs.ctr_stats(ch)["layout"] == {"아래": (10.0, 1)}
 
 
+def test_fonts_and_logos():
+    """굵은 글씨체만 (얇은 건 자동으로 뺌), 이 PC에 설치된 굵은 썸네일 글꼴도, 채널 이름이 달라도 틀·로고를 찾고, 더 큰 로고를 씀."""
+    import io as _io
+    import os
+    import shutil as sh
+    import thumbs
+    import urllib.request
+    from PIL import Image
+    ch = {**core.DEFAULT_CHANNEL, "name": "x", "folder": "x"}
+    names = [p.name for p in thumbs.fonts(ch, thumbs.load_template(ch))]
+    assert names == ["Jua-Regular.ttf", "BlackHanSans-Regular.ttf", "GothicA1-Black.ttf", "Hahmlet-Black.ttf"], names
+    assert all(thumbs.stroke_px(thumbs.FONT_DIR / n) >= thumbs.MIN_STROKE for n in names)
+    assert not (thumbs.FONT_DIR / "DoHyeon-Regular.ttf").exists()  # 얇아서 뺀 글씨체
+    saved = (thumbs.TEMPLATE_DIR, os.environ.get("WINDIR"), dict(thumbs._STROKE))
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            win = Path(d) / "win" / "Fonts"
+            win.mkdir(parents=True)
+            sh.copy(thumbs.FONT_DIR / "BlackHanSans-Regular.ttf", win / "Jalnan.ttf")  # 설치된 굵은 글꼴 흉내
+            sh.copy(thumbs.FONT_DIR / "Jua-Regular.ttf", win / "BMHANNA_thin.ttf")
+            os.environ["WINDIR"] = str(Path(d) / "win")
+            thumbs._STROKE[win / "BMHANNA_thin.ttf"] = 5.0  # 얇은 글꼴이라고 치면
+            got = [p.name for p in thumbs.fonts(ch, thumbs.load_template(ch))]
+            assert "Jalnan.ttf" in got and "BMHANNA_thin.ttf" not in got, got
+            thumbs._STROKE[thumbs.FONT_DIR / "Hahmlet-Black.ttf"] = 5.0
+            assert "Hahmlet-Black.ttf" not in [p.name for p in thumbs.fonts(ch, thumbs.load_template(ch))]
+            # 틀·로고 폴더: 프로그램 채널 이름이 '오십'이어도 YouTube 이름 '고전명언 인생조언'으로 찾음
+            thumbs.TEMPLATE_DIR = Path(d) / "틀"
+            folder = thumbs.TEMPLATE_DIR / "고전명언인생조언"
+            folder.mkdir(parents=True)
+            oship = {**core.DEFAULT_CHANNEL, "name": "오십", "folder": "오십", "channel_title": "고전명언 인생조언"}
+            assert thumbs.template_dir(oship) == folder
+            Image.new("RGBA", (100, 100), "red").save(folder / "로고_기본.png")
+            logo = {"file": "로고.png"}
+            assert thumbs.logo_path(oship, logo).name == "로고_기본.png"
+            buf = _io.BytesIO()
+            Image.new("RGB", (800, 800), "blue").save(buf, "PNG")
+            real = urllib.request.urlopen
+            urllib.request.urlopen = lambda req, timeout: _io.BytesIO(buf.getvalue())
+            try:
+                out = thumbs.save_channel_logo(oship, "https://yt3.example/photo=s800")
+            finally:
+                urllib.request.urlopen = real
+            im = Image.open(out)
+            assert im.size == (460, 460) and im.getpixel((2, 2))[3] == 0 and im.getpixel((230, 230))[2] > 200  # 동그라미만
+            assert thumbs.logo_path(oship, logo).name == "로고_채널.png"  # 더 큰 프로필 사진
+            Image.new("RGBA", (50, 50), "green").save(folder / "로고.png")
+            assert thumbs.logo_path(oship, logo).name == "로고.png"  # 직접 넣은 로고가 먼저
+        finally:
+            thumbs.TEMPLATE_DIR = saved[0]
+            if saved[1] is None:
+                os.environ.pop("WINDIR", None)
+            else:
+                os.environ["WINDIR"] = saved[1]
+            thumbs._STROKE.clear()
+            thumbs._STROKE.update(saved[2])
+
+
 def test_ai_request_and_commons_filter():
     """Claude 요청 형식(모델·구조화 출력·거절 시 다른 모델), 거절 처리, 위키미디어 저작권 거르기."""
     import io as _io

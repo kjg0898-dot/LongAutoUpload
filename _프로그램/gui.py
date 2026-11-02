@@ -1480,6 +1480,13 @@ class Settings:
             import yt
             client = yt.build_client(yt.login(ch["key"], interactive=True, fresh=True))
             ch["channel_id"], ch["channel_title"] = yt.whoami(client)
+            try:  # 썸네일 채널 마크용: 프로필 사진(800px)을 받아 둔다 (넣어 준 로고보다 크면 이걸 씀)
+                import thumbs
+                if url := yt.avatar_url(client):
+                    thumbs.save_channel_logo(ch, url)
+                    app.log(f"[{ch['name']}] 채널 프로필 사진을 받아 썸네일 마크로 쓸 수 있게 했습니다")
+            except Exception as e:
+                app.log(f"[{ch['name']}] (프로필 사진을 못 받았습니다: {e})")
             try:
                 slots = core.detect_slots(yt.publish_times(client))
             except Exception:

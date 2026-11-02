@@ -121,12 +121,13 @@
   "color": "#FFEB00"
  },
  "jitter": 0.02,
- "_폰트": "매번 이 중 하나 (비슷한 굵은 글씨체를 조금씩 바꿔 씀). 이 폴더에 폰트 파일을 넣으면 넣은 것들 중에서 고름",
+ "_폰트": "채널 기존 썸네일이 둥근 굵은 고딕(주아체 느낌)이라 주아를 가장 자주. 얇은 글씨체는 프로그램이 자동으로 뺌 (중장년 시청자)",
  "fonts": [
-  "../../폰트/Jua-Regular.ttf",
-  "../../폰트/Jua-Regular.ttf",
-  "../../폰트/BlackHanSans-Regular.ttf",
-  "../../폰트/DoHyeon-Regular.ttf"
+  "Jua-Regular.ttf",
+  "Jua-Regular.ttf",
+  "BlackHanSans-Regular.ttf",
+  "GothicA1-Black.ttf",
+  "Hahmlet-Black.ttf"
  ],
  "layouts": [
   {

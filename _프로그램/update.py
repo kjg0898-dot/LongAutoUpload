@@ -10,7 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 URL = "https://codeload.github.com/kjg0898-dot/LongAutoUpload/zip/HEAD"  # 기본 브랜치의 최신 상태
-OBSOLETE = ["_프로그램/테스트_초안수정.py", "_프로그램/전체기능_테스트.py"]  # 예전 개발용 시험 파일: 업데이트 때 지운다
+OBSOLETE = ["_프로그램/테스트_초안수정.py", "_프로그램/전체기능_테스트.py",
+            "_프로그램/폰트/DoHyeon-Regular.ttf", "_프로그램/폰트/OFL_DoHyeon.txt"]  # 얇아서 뺀 글씨체  # 예전 개발용 시험 파일: 업데이트 때 지운다
 
 
 def fetch():

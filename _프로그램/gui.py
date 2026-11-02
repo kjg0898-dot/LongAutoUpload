@@ -14,7 +14,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import core
 
-PACKAGES = ["openpyxl", "google-api-python-client", "google-auth-oauthlib"]
+PACKAGES = ["openpyxl", "google-api-python-client", "google-auth-oauthlib", "pillow", "anthropic"]
 NO_WINDOW = 0x08000000  # 설치·알림 때 검은 창이 뜨지 않게
 FONT = "맑은 고딕"
 
@@ -24,6 +24,8 @@ def ensure_packages():
         import google_auth_oauthlib  # noqa: F401
         import googleapiclient  # noqa: F401
         import openpyxl  # noqa: F401
+        import PIL  # noqa: F401
+        import anthropic  # noqa: F401
     except ImportError:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", *PACKAGES],
                               creationflags=NO_WINDOW if sys.platform == "win32" else 0)
@@ -97,7 +99,7 @@ class App:
         self.step_buttons = []
         for key, title, actions in (
                 ("1", "준비", (("SEO 넣기", self.import_seo), ("작업표 열기", self.open_sheet),
-                              ("썸네일 넣기", self.add_thumbs))),
+                              ("사진·썸네일 넣기", self.add_thumbs))),
                 ("2", "자동 처리", (("▶ 시작", self.auto_run),)),
                 ("3", "댓글 고정", (("탭 열기", self.pin_window),)),
                 ("4", "예약 걸기", (("실행", lambda: self.run(steps.schedule_all)),))):
@@ -261,12 +263,20 @@ class App:
         self.root.after(int((at - now).total_seconds() * 1000),
                         lambda: self.busy or self.closing or self.run(fn, label))
 
-    def review_titles(self, rows):
-        """작업 스레드에서 부른다: 제목 확인 창을 띄우고 닫힐 때까지 기다린다. {파일: 제목} 또는 None(취소)."""
+    def _wait_window(self, make, rows):
+        """작업 스레드에서 부른다: 창을 띄우고 닫힐 때까지 기다려 그 결과를 돌려준다."""
         result, done = [], threading.Event()
-        self.later(lambda: TitleReview(self, rows, lambda r: (result.append(r), done.set())))
+        self.later(lambda: make(self, rows, lambda r: (result.append(r), done.set())))
         done.wait()
         return result[0]
+
+    def review_titles(self, rows):
+        """{파일: {'제목': …, '썸네일문구': …}} 또는 None(취소)."""
+        return self._wait_window(TitleReview, rows)
+
+    def review_thumbs(self, rows):
+        """만든 썸네일 확인. 진행이면 True."""
+        return self._wait_window(ThumbReview, rows)
 
     def auto_run(self):
         def work(app):
@@ -438,10 +448,14 @@ class App:
             open_path(sheets[0])
 
     def add_thumbs(self):
-        ch, folder = self._working_channel("썸네일 넣기")
+        ch, folder = self._working_channel("사진·썸네일 넣기")
         if not folder:
             return
-        paths = filedialog.askopenfilenames(title=f"[{ch['name']}] 썸네일 고르기 (여러 개 가능)",
+        what = "재료 사진" if ch["thumb_auto"] else "썸네일"
+        if ch["thumb_auto"]:  # 썸네일은 프로그램이 만든다: 깔 사진은 재료 폴더로 (썸네일로 짝짓지 않게)
+            folder = folder / core.MATERIAL
+            folder.mkdir(exist_ok=True)
+        paths = filedialog.askopenfilenames(title=f"[{ch['name']}] {what} 고르기 (여러 개 가능)",
                                             filetypes=[("그림", "*.png *.jpg *.jpeg"), ("모든 파일", "*.*")])
         if not paths:
             return
@@ -449,12 +463,13 @@ class App:
         for p in map(Path, paths):
             if not core._nums(p):
                 warn.append(f"{p.name}: 이름에 순번 숫자가 없어 어느 영상 것인지 모를 수 있음")
-            if p.stat().st_size > core.THUMB_MAX:
+            if p.stat().st_size > core.THUMB_MAX and not ch["thumb_auto"]:
                 warn.append(f"{p.name}: 2MB를 넘어 YouTube에 못 올림")
             shutil.copy2(p, folder / p.name)
-        self.log(f"[{ch['name']}] 썸네일 {len(paths)}개를 넣었습니다: 영상/{core.rel(folder)}")
+        self.log(f"[{ch['name']}] {what} {len(paths)}개를 넣었습니다: 영상/{core.rel(folder)}"
+                 + (" — 썸네일은 '2. 자동 처리'에서 문구를 넣어 만듭니다." if ch["thumb_auto"] else ""))
         if warn:
-            messagebox.showwarning("썸네일 넣기", "\n".join(warn))
+            messagebox.showwarning(what, "\n".join(warn))
         self.refresh_status()
 
     def open_excel(self):
@@ -585,62 +600,83 @@ class App:
             self.steps.schedule_all))).pack(fill="x", padx=10, pady=10)
 
 
+def photo_image(path, width):
+    """작은 미리보기 그림 (JPG·PNG). 못 읽으면 None."""
+    try:
+        from PIL import Image, ImageTk
+        img = Image.open(path)
+        img.thumbnail((width, width))
+        return ImageTk.PhotoImage(img)
+    except Exception:
+        return None
+
+
+def scroll_area(win, width, height):
+    """세로로 스크롤되는 칸. 안쪽 틀을 돌려준다."""
+    box = ttk.Frame(win)
+    box.pack(fill="both", expand=True, padx=12)
+    canvas = tk.Canvas(box, highlightthickness=0, width=width, height=height)
+    bar = ttk.Scrollbar(box, orient="vertical", command=canvas.yview)
+    inner = ttk.Frame(canvas)
+    inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.create_window((0, 0), window=inner, anchor="nw")
+    canvas.configure(yscrollcommand=bar.set)
+    canvas.pack(side="left", fill="both", expand=True)
+    bar.pack(side="right", fill="y")
+    win.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+    return inner
+
+
+def candidates(text):
+    return [x.split(". ", 1)[-1] for x in text.splitlines() if x.strip()]
+
+
 class TitleReview:
-    """2. 자동 처리 중: 새 영상들의 제목을 썸네일을 보며 한 화면에서 고른다 (후보 3안 고르기 또는 직접 고치기)."""
+    """2. 자동 처리 중: 새 영상들의 제목(과 썸네일 자동 만들기 채널은 썸네일 문구)을 한 화면에서 고르거나 고친다."""
 
     def __init__(self, app, rows, done):
         app.title_review, self.rows, self.done = self, rows, done
+        auto = {c["name"] for c in core.load_config()["channels"] if c["thumb_auto"]}
         win = self.win = tk.Toplevel(app.root)
         win.title("제목 확인")
         win.transient(app.root)
         win.grab_set()
         win.protocol("WM_DELETE_WINDOW", self.cancel)
         ttk.Label(win, padding=(12, 10, 12, 4), text=(
-            f"새 영상 {len(rows)}개 — 썸네일과 맞는 제목을 ▾에서 고르거나 직접 고치세요. 처음 값은 SEO 추천 1순위입니다.")).pack(anchor="w")
-        box = ttk.Frame(win)
-        box.pack(fill="both", expand=True, padx=12)
-        canvas = tk.Canvas(box, highlightthickness=0, width=980, height=min(560, 112 * len(rows)))
-        bar = ttk.Scrollbar(box, orient="vertical", command=canvas.yview)
-        inner = ttk.Frame(canvas)
-        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=bar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        bar.pack(side="right", fill="y")
-        win.bind("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+            f"새 영상 {len(rows)}개 — 제목을 ▾에서 고르거나 직접 고치세요. 처음 값은 SEO 추천입니다."
+            + ("\n썸네일 문구는 / 로 줄을 나눕니다. 이 문구로 썸네일을 자동으로 만듭니다." if auto else ""))).pack(anchor="w")
+        inner = scroll_area(win, 980, min(560, (150 if auto else 112) * len(rows)))
         self.vars, self.images = {}, []
         for i, r in enumerate(rows):
-            pic = self.preview(r)
-            thumb = tk.Label(inner, image=pic) if pic else ttk.Label(
+            is_auto = r["채널"] in auto
+            pic = core.material(r) if is_auto else (
+                core.VIDEO_DIR / r["썸네일"] if r["썸네일"] not in ("", "없음") else None)
+            img = photo_image(pic, 170) if pic else None
+            if img:
+                self.images.append(img)  # 참조를 남겨야 그림이 사라지지 않는다
+            (tk.Label(inner, image=img) if img else ttk.Label(
                 inner, width=24, foreground=COLORS["muted"], wraplength=170,
-                text=Path(r["썸네일"]).name if r["썸네일"] not in ("", "없음") else "썸네일 없음")
-            thumb.grid(row=2 * i, column=0, rowspan=2, sticky="nw", padx=(0, 10), pady=6)
+                text=Path(pic).name if pic else ("재료 사진 없음" if is_auto else "썸네일 없음"))).grid(
+                row=3 * i, column=0, rowspan=3, sticky="nw", padx=(0, 10), pady=6)
             ttk.Label(inner, foreground=COLORS["muted"], text=f"[{r['채널']}] {Path(r['파일']).name}").grid(
-                row=2 * i, column=1, columnspan=2, sticky="sw", pady=(6, 0))
-            var = self.vars[r["파일"]] = tk.StringVar(value=r["제목"])
-            ttk.Combobox(inner, textvariable=var, width=78, values=[
-                x.split(". ", 1)[-1] for x in r["제목후보"].splitlines() if x.strip()]).grid(row=2 * i + 1, column=1, sticky="nw")
-            length = ttk.Label(inner, width=12)
-            length.grid(row=2 * i + 1, column=2, sticky="nw", padx=6)
-            var.trace_add("write", lambda *a, v=var, w=length: self.show_length(v, w))
-            self.show_length(var, length)
+                row=3 * i, column=1, columnspan=3, sticky="sw", pady=(6, 0))
+            fields = {"제목": "제목후보"} | ({"썸네일문구": "썸네일문구후보"} if is_auto else {})
+            self.vars[r["파일"]] = {}
+            for j, (key, cands) in enumerate(fields.items(), 1):
+                ttk.Label(inner, text="제목" if key == "제목" else "썸네일 문구", foreground=COLORS["muted"]).grid(
+                    row=3 * i + j, column=1, sticky="nw", padx=(0, 6))
+                var = self.vars[r["파일"]][key] = tk.StringVar(value=r[key])
+                ttk.Combobox(inner, textvariable=var, width=72, values=candidates(r[cands])).grid(
+                    row=3 * i + j, column=2, sticky="nw")
+                if key == "제목":
+                    length = ttk.Label(inner, width=12)
+                    length.grid(row=3 * i + j, column=3, sticky="nw", padx=6)
+                    var.trace_add("write", lambda *a, v=var, w=length: self.show_length(v, w))
+                    self.show_length(var, length)
         buttons = ttk.Frame(win, padding=12)
         buttons.pack(fill="x")
         ttk.Button(buttons, text="이대로 진행 ▶", command=self.ok).pack(side="right")
         ttk.Button(buttons, text="취소", command=self.cancel).pack(side="right", padx=6)
-
-    def preview(self, r):
-        """PNG 썸네일만 작게 보여준다 (JPG는 tkinter가 못 읽어서 파일 이름만)."""
-        p = core.VIDEO_DIR / r["썸네일"] if r["썸네일"] not in ("", "없음") else None
-        if not p or p.suffix.lower() != ".png" or not p.exists():
-            return None
-        try:
-            img = tk.PhotoImage(file=str(p))
-            img = img.subsample(max(1, img.width() // 160))
-        except tk.TclError:
-            return None
-        self.images.append(img)  # 참조를 남겨야 그림이 사라지지 않는다
-        return img
 
     @staticmethod
     def show_length(var, label):
@@ -649,11 +685,11 @@ class TitleReview:
                      foreground=COLORS["accent"] if n > 68 else COLORS["muted"])
 
     def ok(self):
-        titles = {f: v.get().strip() for f, v in self.vars.items()}
-        bad = [Path(f).name for f, t in titles.items() if not t or "\n" in t]
+        picked = {f: {k: v.get().strip() for k, v in d.items()} for f, d in self.vars.items()}
+        bad = [Path(f).name for f, d in picked.items() if any(not v or "\n" in v for v in d.values())]
         if bad:
-            return messagebox.showerror("제목 확인", "제목이 비어 있습니다:\n" + "\n".join(bad), parent=self.win)
-        self.finish(titles)
+            return messagebox.showerror("제목 확인", "제목이나 썸네일 문구가 비어 있습니다:\n" + "\n".join(bad), parent=self.win)
+        self.finish(picked)
 
     def cancel(self):
         self.finish(None)
@@ -661,6 +697,75 @@ class TitleReview:
     def finish(self, result):
         self.win.destroy()
         self.done(result)
+
+
+class ThumbReview:
+    """2. 자동 처리 중: 자동으로 만든 썸네일 확인. 마음에 안 드는 것만 '다시 만들기' (색·쪽·실제 사진이 새로 정해짐)."""
+
+    def __init__(self, app, rows, done):
+        app.thumb_review, self.app, self.done = self, app, done
+        win = self.win = tk.Toplevel(app.root)
+        win.title("썸네일 확인")
+        win.transient(app.root)
+        win.grab_set()
+        win.protocol("WM_DELETE_WINDOW", lambda: self.finish(False))
+        ttk.Label(win, padding=(12, 10, 12, 4), text=(
+            f"썸네일 {len(rows)}개 — 마음에 안 드는 것만 '다시 만들기'. 문구를 바꾸려면 취소 → '2. 자동 처리'를 다시 누르세요.")).pack(anchor="w")
+        inner = scroll_area(win, 1000, min(600, 290 * ((len(rows) + 1) // 2)))
+        self.images, self.labels, self.busy = {}, {}, set()
+        for i, r in enumerate(rows):
+            cell = ttk.Frame(inner, padding=6)
+            cell.grid(row=i // 2, column=i % 2, sticky="nw")
+            self.labels[r["파일"]] = tk.Label(cell)
+            self.labels[r["파일"]].pack()
+            ttk.Label(cell, foreground=COLORS["muted"], text=f"[{r['채널']}] {Path(r['파일']).name}").pack(side="left")
+            button = ttk.Button(cell, text="다시 만들기")
+            button.config(command=lambda r=r, b=button: self.remake(r, b))
+            button.pack(side="right")
+            self.show(r)
+        buttons = ttk.Frame(win, padding=12)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="이대로 진행 ▶", command=lambda: self.finish(True)).pack(side="right")
+        ttk.Button(buttons, text="취소", command=lambda: self.finish(False)).pack(side="right", padx=6)
+
+    def show(self, r):
+        img = photo_image(core.VIDEO_DIR / r["썸네일"], 448)
+        self.images[r["파일"]] = img
+        self.labels[r["파일"]].config(image=img or "", text="" if img else "그림을 못 읽음")
+
+    def remake(self, r, button):
+        import thumbs
+        cfg = core.load_config()
+        ch = next(c for c in cfg["channels"] if c["name"] == r["채널"])
+        button.state(["disabled"])
+        button.config(text="만드는 중…")
+        self.busy.add(r["파일"])
+
+        def work():
+            try:
+                thumbs.make(ch, r, cfg.get("claude_key", ""), self.app.log, force=True)
+                err = None
+            except Exception as e:
+                err = str(e)
+
+            def after():
+                self.busy.discard(r["파일"])
+                if not self.win.winfo_exists():
+                    return
+                button.state(["!disabled"])
+                button.config(text="다시 만들기")
+                if err:
+                    messagebox.showerror("다시 만들기", err, parent=self.win)
+                else:
+                    self.show(r)
+            self.app.later(after)
+        threading.Thread(target=work, daemon=True).start()
+
+    def finish(self, ok):
+        if ok and self.busy:
+            return messagebox.showinfo("썸네일 확인", "다시 만드는 중인 썸네일이 있습니다. 끝난 뒤에 눌러주세요.", parent=self.win)
+        self.win.destroy()
+        self.done(ok)
 
 
 class Editor:
@@ -804,6 +909,7 @@ FIELDS = [  # 늘 보이는 칸
     ("ypp", "수익 창출(YPP) 채널", "check"),
     ("members", "회원(멤버십) 기능 사용", "check"),
     ("playlist", "재생목록 (비우면 안 넣음, 여러 개는 쉼표로)", "entry"),
+    ("thumb_auto", "썸네일 자동 만들기 (재료 사진 + 문구)", "check"),
 ]
 ADVANCED = [  # '고급 설정'을 눌러야 보이는 칸 (보통 그대로)
     ("folder", "영상 폴더 이름 (보통 채널 이름과 같음)", "entry"),
@@ -869,10 +975,18 @@ class Settings:
         ttk.Label(adv, text="진행 방식").grid(row=m + 1, column=0, sticky="w", pady=2)
         ttk.Combobox(adv, textvariable=self.mode, values=["한 번에 전체", "영상마다 확인"],
                      state="readonly", width=38).grid(row=m + 1, column=1, sticky="w")
+        self.key = tk.StringVar(value=self.cfg["claude_key"])
+        self.key.trace_add("write", lambda *a: setattr(self, "saved", False))
+        ttk.Label(adv, text="Claude API 키 (썸네일 자동 만들기)").grid(row=m + 2, column=0, sticky="w", pady=2)
+        ttk.Entry(adv, textvariable=self.key, width=40, show="•").grid(row=m + 2, column=1, sticky="w")
+        ttk.Button(adv, text="이 채널 썸네일 틀 폴더 열기 (로고·폰트)", command=self.open_template).grid(
+            row=m + 3, column=1, sticky="w", pady=4)
         ttk.Label(adv, foreground="#555", justify="left", text=(
             "※ 제목: '기준 글자 뒤' + ']' → Studio 제목 틀의 ] 바로 뒤에 들어감\n"
             "    예) [숨겨진 동양사] ＜제목＞ l 역사 인물 l 고전 | 수면오디오북\n"
-            "※ '건들지 않음' = Studio 업로드 기본 설정 그대로")).grid(row=m + 2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+            "※ '건들지 않음' = Studio 업로드 기본 설정 그대로\n"
+            "※ API 키가 없으면 썸네일은 실제 사진 없이 만들고, 강조는 마지막 줄")).grid(
+            row=m + 4, column=0, columnspan=2, sticky="w", pady=(6, 0))
         adv.grid_remove()
         ttk.Button(form, text="저장", command=self.save).grid(row=n + 3, column=1, sticky="e", pady=10)
         self.refresh(0)
@@ -995,6 +1109,19 @@ class Settings:
         except ValueError:
             pass
 
+    def open_template(self):
+        if self.cur is None:
+            return
+        import thumbs
+        folder = thumbs.template_dir(self.cfg["channels"][self.cur])
+        folder.mkdir(parents=True, exist_ok=True)
+        guide = folder / "여기에 넣을 것.txt"
+        if not guide.exists():
+            guide.write_text("로고.png  — 채널 마크 (배경이 투명한 PNG). 모든 썸네일에 같은 자리·같은 크기로 그대로 붙습니다\n"
+                             "폰트 파일 (.ttf / .otf) — 썸네일 글씨체. 없으면 맑은 고딕 굵게\n"
+                             "틀.json — 글자 자리·크기·색 조합·사진 칸 (예시 썸네일을 Claude에게 보내면 만들어 줍니다)\n", "utf-8")
+        open_path(folder)
+
     def save(self):
         self.commit()
         try:
@@ -1003,7 +1130,7 @@ class Settings:
                 raise ValueError
         except ValueError:
             return messagebox.showerror("저장 실패", "연속 실패 횟수는 1~50 사이 숫자로 적어주세요.", parent=self.win)
-        self.cfg["max_fails"], self.cfg["mode"] = fails, self.mode.get()
+        self.cfg["max_fails"], self.cfg["mode"], self.cfg["claude_key"] = fails, self.mode.get(), self.key.get().strip()
         try:
             core.save_config(self.cfg)
         except ValueError as e:

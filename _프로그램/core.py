@@ -38,15 +38,16 @@ DEFAULT_CHANNEL = {
     "desc_mode": "맨 앞", "desc_marker": "",
     "tags_mode": "뒤에 추가", "playlist": "",
     "category": KEEP, "language": KEEP, "synthetic": KEEP, "kids": KEEP,
-    "embeddable": KEEP, "license": KEEP,
+    "embeddable": KEEP, "license": KEEP, "thumb_auto": False,
     "channel_id": "", "channel_title": "",
 }
-DEFAULT_CONFIG = {"channels": [], "max_fails": 3, "mode": "한 번에 전체"}
+DEFAULT_CONFIG = {"channels": [], "max_fails": 3, "mode": "한 번에 전체", "claude_key": ""}
 
 # 사용자가 고치는 칸(제목·회원우선·예약일시·영상ID)을 앞쪽에
 COLUMNS = ["채널", "파일", "제목", "회원우선", "예약일시", "상태", "오류", "영상ID",
-           "제목후보", "설명", "태그", "고정댓글", "메모장", "썸네일"]
-EDITABLE = ("제목", "회원우선", "예약일시", "영상ID", "썸네일")  # 썸네일: 없이 올리려면 "없음"
+           "제목후보", "설명", "태그", "고정댓글", "메모장", "썸네일", "썸네일문구", "썸네일문구후보"]
+EDITABLE = ("제목", "회원우선", "예약일시", "영상ID", "썸네일", "썸네일문구")  # 썸네일: 없이 올리려면 "없음"
+MATERIAL = "재료"  # 채널 폴더 안: 썸네일 자동 만들기에 깔 사진 (썸네일로 짝짓지 않음)
 MEMBER_TODO = "회원 설정 필요"  # API로 못 하는 회원 전용 공개를 사용자가 Studio에서 해야 함
 DONE_STATES = ("예약완료", MEMBER_TODO, "완료(회원 직접설정)")
 
@@ -352,7 +353,7 @@ def scan_channel(folder, drafts=()):
     virtual = [Path(folder) / n for n in dict.fromkeys(drafts) if n.lower() not in names]
     videos = sorted(local + virtual, key=natural_key)
     entries = load_entries(p for p in files if p.suffix.lower() == ".txt")
-    images = [p for p in files if p.suffix.lower() in IMAGE_EXT]
+    images = [p for p in files if p.suffix.lower() in IMAGE_EXT and MATERIAL not in p.relative_to(folder).parts]
     pairs = []
     for v in videos:
         entry, sure_e = _match_entry(v, entries, videos)
@@ -370,6 +371,14 @@ def scan_channel(folder, drafts=()):
                 if not (len(sure) == 1 and p is sure[0]):
                     p[col] = (None, False)
     return [(v, e[0], t[0]) for v, e, t in pairs]
+
+
+def material(row):
+    """썸네일 자동 만들기의 재료 사진: 채널 폴더/재료/ 안에서 영상 파일 이름과 같은 번호. 없으면 None."""
+    folder = (VIDEO_DIR / row["파일"]).parent / MATERIAL
+    nums = _nums(Path(row["파일"]))
+    pics = [p for p in folder.rglob("*") if p.suffix.lower() in IMAGE_EXT] if folder.exists() else []
+    return _by_number(next(iter(nums)), pics, _nums) if len(nums) == 1 else None
 
 
 def channel_dirs(ch):
@@ -538,19 +547,28 @@ def build_rows(cfg, old_rows, drafts=None, uploaded=None):
                 name = rel(video)
                 seen.add(name)
                 info = entry or {}
+                texts = info.get("thumb_texts", [])
                 fresh = {"제목후보": "\n".join(f"{i}. {t}" for i, t in enumerate(info.get("titles", []), 1)),
                          "설명": info.get("desc", ""), "태그": info.get("tags", ""), "고정댓글": info.get("comment", ""),
-                         "메모장": rel(info.get("src")), "썸네일": rel(thumb)}
-                row = old.get(name) or dict.fromkeys(COLUMNS, "") | {"채널": ch["name"], "파일": name}
+                         "메모장": rel(info.get("src")), "썸네일": rel(thumb),
+                         "썸네일문구후보": "\n".join(f"{i}. {t}" for i, t in enumerate(texts, 1))}
+                row = old.get(name)
+                if row and row["상태"] in DONE_STATES and not video.exists() and own.get(video.name, row["영상ID"]) != row["영상ID"]:
+                    row = None  # 끝난 예전 줄과 이름만 같은 새 초안 (같은 날 두 번째 묶음, 파일 이름은 매번 같음)
+                row = row or dict.fromkeys(COLUMNS, "") | {"채널": ch["name"], "파일": name}
                 if not row["영상ID"] and not video.exists():
                     row["영상ID"] = own[video.name]  # 폴더에 없는 영상 = Studio 초안
                 if row["상태"] == "":
                     keep_thumb = row["썸네일"] == "없음"  # 썸네일 없이 올리기로 한 영상
                     row |= fresh | ({"썸네일": "없음"} if keep_thumb else {})
                     row["제목"] = row["제목"] or info.get("title", "")
+                    row["썸네일문구"] = row["썸네일문구"] or (texts[info.get("thumb_pick", 0)] if texts else "")
                     if not entry:
                         problems.append(f"{name}: 메모장(SEO) 내용을 못 찾음")
-                    if not row["썸네일"]:
+                    if ch["thumb_auto"]:  # 썸네일은 2. 자동 처리에서 만든다: 재료 사진만 있으면 됨
+                        if not material(row):
+                            problems.append(f"{name}: 재료 사진을 못 찾음 (채널 폴더/{MATERIAL}/ 에 같은 번호 사진)")
+                    elif not row["썸네일"]:
                         problems.append(f"{name}: 썸네일을 못 찾음 (없이 올리려면 엑셀 썸네일 칸에 '없음')")
                     elif thumb and thumb.stat().st_size > THUMB_MAX:
                         problems.append(f"{name}: 썸네일이 2MB를 넘음 ({thumb.name})")
@@ -631,7 +649,7 @@ def write_rows(rows):
     for r in rows:
         ws.append([r.get(c, "") for c in COLUMNS])
     widths = {"채널": 12, "파일": 28, "제목": 50, "회원우선": 9, "예약일시": 17, "상태": 12, "오류": 40, "영상ID": 14,
-              "제목후보": 50, "설명": 40, "태그": 20, "고정댓글": 30, "메모장": 20, "썸네일": 20}
+              "제목후보": 50, "설명": 40, "태그": 20, "고정댓글": 30, "메모장": 20, "썸네일": 20, "썸네일문구": 30, "썸네일문구후보": 40}
     edit = PatternFill("solid", fgColor="FFF2CC")  # 사용자가 고치는 칸
     bad = PatternFill("solid", fgColor="F8CBAD")  # 오류가 있는 칸
     for i, col in enumerate(COLUMNS, 1):

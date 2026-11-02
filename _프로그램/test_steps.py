@@ -1,4 +1,5 @@
 """가짜 YouTube로 1→2→3→4단계 전체 흐름 검사. 실행: python test_steps.py"""
+import json
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -99,7 +100,13 @@ class UI:
 
     def review_titles(self, rows):
         self.reviewed = [r["제목"] for r in rows]
-        return None if self.answer is False else {r["파일"]: r["제목"] for r in rows} | getattr(self, "retitle", {})
+        if self.answer is False:
+            return None
+        return {r["파일"]: {"제목": r["제목"]} | getattr(self, "retitle", {}).get(r["파일"], {}) for r in rows}
+
+    def review_thumbs(self, rows):
+        self.thumbs = [r["썸네일"] for r in rows]
+        return True
 
 
 def setup(d):
@@ -403,7 +410,7 @@ def test_auto_all_and_no_title_template():
     with tempfile.TemporaryDirectory() as d:
         fake, ui = setup(d), UI()
         fake.videos_db["vid0"]["snippet"]["title"] = "1"
-        ui.retitle = {"b/명언/3.mp4": "썸네일 보고 고른 제목"}
+        ui.retitle = {"b/명언/3.mp4": {"제목": "썸네일 보고 고른 제목"}}
         assert steps.auto_all(ui) is True  # 고정할 댓글이 있으니 고정 창을 띄움
         assert ui.reviewed == ["명언 1", "명언 2", "명언 3"] and not ui.asked
         assert [r["상태"] for r in core.read_rows()] == ["댓글완료"] * 3
@@ -458,6 +465,160 @@ def test_no_video_files_uses_studio_drafts():
         steps.schedule_all(ui)
         assert all(r["상태"] in core.DONE_STATES for r in core.read_rows())
         assert (core.DONE_DIR / "b" / "명언").is_dir() and not (core.VIDEO_DIR / "b" / "명언").exists()
+        # 같은 묶음 이름·같은 파일 이름으로 다음 영상을 올림 → 끝난 줄이 아니라 새 줄
+        (core.VIDEO_DIR / "b" / "명언").mkdir(parents=True)
+        for n in (1, 2, 3):
+            (core.DONE_DIR / "b" / "명언" / f"{n}.txt").rename(core.VIDEO_DIR / "b" / "명언" / f"{n}.txt")
+            (core.DONE_DIR / "b" / "명언" / f"{n}.jpg").rename(core.VIDEO_DIR / "b" / "명언" / f"{n}.jpg")
+        db["vid0b"] = {**db["vid0"], "id": "vid0b", "status": {"privacyStatus": "private"},
+                       "snippet": {**db["vid0"]["snippet"], "publishedAt": "2099-01-01T00:00:00Z"}}
+        steps.build_excel(ui)
+        rows = core.read_rows()
+        assert [(r["파일"], r["영상ID"], r["상태"]) for r in rows] == [
+            ("b/명언/1.mp4", "vid0b", ""), ("b/명언/3.mp4", "vid2", core.MEMBER_TODO)], rows  # 회원 설정은 아직 할 일
+
+
+def _material(d, nums=(1, 2, 3)):
+    from PIL import Image
+    folder = core.VIDEO_DIR / "b" / "명언" / core.MATERIAL
+    folder.mkdir()
+    for n in nums:
+        Image.new("RGB", (1600, 900), (40 * n, 90, 120)).save(folder / f"{n}번 사진.png")
+    for n in (1, 2, 3):  # 사용자가 만든 썸네일은 없음
+        (core.VIDEO_DIR / "b" / "명언" / f"{n}.jpg").unlink()
+
+
+def test_auto_thumbnails_without_api_key():
+    """썸네일 자동 만들기: 재료 사진 + 문구 → <번호>_자동썸네일.jpg, 재료 사진은 썸네일로 짝짓지 않는다."""
+    import os
+    import thumbs
+    os.environ.pop("ANTHROPIC_API_KEY", None)
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        thumbs.TEMPLATE_DIR = Path(d) / "틀"
+        cfg = core.load_config()
+        cfg["channels"][0]["thumb_auto"] = True
+        core.save_config(cfg)
+        _material(d, (1, 2))  # 3번은 재료 사진 없음
+        ui.retitle = {"b/명언/1.mp4": {"썸네일문구": "첫 문구"}, "b/명언/2.mp4": {"썸네일문구": "고친 문구 / 둘째 줄"}}
+        assert steps.auto_all(ui) is True
+        rows = core.read_rows()
+        assert [r["썸네일"] for r in rows[:2]] == ["b/명언/1_자동썸네일.jpg", "b/명언/2_자동썸네일.jpg"], rows
+        assert "재료" in rows[2]["오류"] and rows[1]["썸네일문구"] == "고친 문구 / 둘째 줄", rows[2]
+        assert ui.thumbs == ["b/명언/1_자동썸네일.jpg", "b/명언/2_자동썸네일.jpg"]
+        assert [r["상태"] for r in rows] == ["댓글완료", "댓글완료", ""] and fake.thumbs == ["vid0", "vid1"]
+        from PIL import Image
+        img = Image.open(core.VIDEO_DIR / rows[0]["썸네일"])
+        assert img.size == (1280, 720) and (core.VIDEO_DIR / rows[0]["썸네일"]).stat().st_size <= core.THUMB_MAX
+        before = (core.VIDEO_DIR / rows[0]["썸네일"]).stat().st_mtime_ns
+        thumbs.make(cfg["channels"][0], rows[0])  # 문구·재료가 그대로면 다시 만들지 않음
+        assert (core.VIDEO_DIR / rows[0]["썸네일"]).stat().st_mtime_ns == before
+
+
+def test_auto_thumbnails_with_claude():
+    """API 키가 있으면 Claude가 글자 쪽·강조·검색어를 정하고 실제 사진을 골라 넣는다 (여기서는 가짜 Claude)."""
+    import ai
+    import thumbs
+    from PIL import Image
+    calls = []
+    saved = (ai.client, ai.plan, ai.find_photo)
+    ai.client = lambda key: calls.append(("client", key)) or "CL"
+    ai.plan = lambda cl, base, text, title, desc, sides: calls.append(("plan", text)) or {
+        "side": "right", "accents": ["명언"], "queries": ["Seoul 1950"]}
+    ai.find_photo = lambda cl, queries, text, title, log: calls.append(("photo", queries)) or (
+        Image.new("RGB", (800, 600), "red"), "File:Seoul.jpg")
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            setup(d)
+            ui = UI()
+            thumbs.TEMPLATE_DIR = Path(d) / "틀"
+            cfg = core.load_config()
+            cfg["channels"][0]["thumb_auto"], cfg["claude_key"] = True, "sk-test"
+            core.save_config(cfg)
+            _material(d, (1,))
+            rows = core.read_rows() or (steps.build_excel(ui), core.read_rows())[1]
+            rows[0]["썸네일문구"] = "명언 하나 / 둘째 줄"
+            steps.make_thumbnails(ui, rows, rows[:1])
+            assert ("client", "sk-test") in calls and ("photo", ["Seoul 1950"]) in calls, calls
+            note = json.loads((core.VIDEO_DIR / "b" / "명언" / "1_자동썸네일.json").read_text("utf-8"))
+            assert note["plan"]["side"] == "right" and note["photo"] == "File:Seoul.jpg"
+            img = Image.open(core.VIDEO_DIR / rows[0]["썸네일"]).convert("RGB")
+            assert img.getpixel((180, 200))[0] > 200  # 글자가 오른쪽이면 실제 사진(빨강)은 왼쪽 위
+    finally:
+        ai.client, ai.plan, ai.find_photo = saved
+
+
+def test_ai_request_and_commons_filter():
+    """Claude 요청 형식(모델·구조화 출력·거절 시 다른 모델), 거절 처리, 위키미디어 저작권 거르기."""
+    import io as _io
+    import ai
+    from PIL import Image
+    from types import SimpleNamespace as NS
+    sent = []
+
+    class Msgs:
+        def __init__(self, reply, stop="end_turn"):
+            self.reply, self.stop = reply, stop
+
+        def create(self, **kw):
+            sent.append(kw)
+            return NS(stop_reason=self.stop, content=[NS(type="thinking"), NS(type="text", text=self.reply)])
+    cl = NS(beta=NS(messages=Msgs('{"side": "left", "accents": ["백기", "없는말"], "queries": ["MRE Gulf War"]}')))
+    out = ai.plan(cl, Image.new("RGB", (100, 60)), "미군은 버린 봉지 / 적군은 백기", "제목", "설명", ["left", "right"])
+    assert out == {"side": "left", "accents": ["백기"], "queries": ["MRE Gulf War"]}, out  # 문구에 없는 말은 버림
+    kw = sent[-1]
+    assert kw["model"] == "claude-opus-5-5" and kw["fallbacks"] == "default" and kw["betas"] == ["server-side-fallback-2026-07-01"]
+    assert kw["output_config"]["format"]["type"] == "json_schema" and kw["output_config"]["effort"] == "medium"
+    assert kw["messages"][0]["content"][0]["type"] == "image"
+    try:
+        ai.ask(NS(beta=NS(messages=Msgs("", "refusal"))), [], {})
+        raise AssertionError("거절을 그냥 넘김")
+    except RuntimeError as e:
+        assert "거절" in str(e)
+
+    pages = {"query": {"pages": {
+        "1": {"index": 1, "title": "File:PD.jpg", "imageinfo": [{"thumburl": "u1", "width": 900, "extmetadata": {
+            "Copyrighted": {"value": "False"}, "LicenseShortName": {"value": "Public domain"}}}]},
+        "2": {"index": 2, "title": "File:CCBY.jpg", "imageinfo": [{"thumburl": "u2", "width": 900, "extmetadata": {
+            "Copyrighted": {"value": "True"}, "LicenseShortName": {"value": "CC BY-SA 4.0"}}}]},
+        "3": {"index": 3, "title": "File:Small.jpg", "imageinfo": [{"thumburl": "u3", "width": 200, "extmetadata": {
+            "LicenseShortName": {"value": "CC0"}}}]}}}}
+    saved = ai.urllib.request.urlopen
+    ai.urllib.request.urlopen = lambda req, timeout: (sent.append(req.headers), _io.BytesIO(json.dumps(pages).encode()))[1]
+    try:
+        assert ai.search_commons("Gulf War") == [{"title": "PD.jpg", "url": "u1"}]  # CC BY-SA·작은 사진은 뺌
+        assert "Longautoupload" in str(sent[-1]) or "LongAutoUpload" in str(sent[-1])  # 위키미디어용 이름표
+    finally:
+        ai.urllib.request.urlopen = saved
+
+
+def test_thumbnail_rules():
+    """한글이 깨질 글자는 막고, 채널 마크는 매번 같은 자리에 그대로, 같은 문구라도 매번 조금씩 다르게."""
+    import random
+    import thumbs
+    from PIL import Image
+    with tempfile.TemporaryDirectory() as d:
+        thumbs.TEMPLATE_DIR = Path(d)
+        ch = {**core.DEFAULT_CHANNEL, "name": "역사", "folder": "역사"}
+        (Path(d) / "역사").mkdir()
+        mark = Image.new("RGBA", (120, 50), (10, 200, 30, 255))
+        mark.save(Path(d) / "역사" / "로고.png")
+        base = Image.new("RGB", (1600, 900), "#888")
+        try:
+            thumbs.compose(ch, base, "좋아요 ❤️")
+            raise AssertionError("깨지는 글자를 그대로 찍음")
+        except ValueError as e:
+            assert "❤" in str(e)
+        try:
+            thumbs.compose(ch, base, "가 / 나 / 다 / 라")
+            raise AssertionError("줄 수 제한을 넘김")
+        except ValueError as e:
+            assert "4줄" in str(e)
+        imgs = [thumbs.compose(ch, base, "미군은 버린 봉지 / 적군은 백기", None, Image.new("RGB", (800, 600), "red"),
+                               random.Random(i)) for i in range(6)]
+        for img in imgs:
+            assert img.crop((40, 28, 160, 78)).tobytes() == Image.new("RGB", (120, 50), (10, 200, 30)).tobytes()
+        assert len({img.tobytes() for img in imgs}) > 1  # 매번 조금씩 다름
 
 
 def test_publish_times():

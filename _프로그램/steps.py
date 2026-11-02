@@ -1,8 +1,10 @@
 """버튼 하나 = 단계 하나. ui는 log(글), ask(질문)->bool, alert(경고), notify(끝났을 때 알림)을 가진 객체."""
 import math
+import os
 import time
 import webbrowser
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -262,6 +264,9 @@ def _compose(ch, r, original):
         raise ValueError("설명이 비어 있습니다 (SEO 메모장을 못 찾음). '2. 자동 처리'를 다시 누르세요.")
     if r["예약일시"]:
         core.parse_dt(r["예약일시"], core.parse_slots(ch["slots"], ch["name"]))  # 형식 오류를 미리 알림
+    if not r["썸네일"] and ch["thumb_auto"]:
+        raise ValueError(f"썸네일을 만들지 못했습니다. 채널 폴더/{core.MATERIAL}/ 의 같은 번호 사진과 썸네일 문구를 확인하고 "
+                         "'2. 자동 처리'를 다시 누르세요.")
     if not r["썸네일"]:
         raise ValueError("썸네일을 못 찾았습니다. 썸네일을 채널 폴더에 넣고 '2. 자동 처리'를 다시 누르거나, 목록에서 오른쪽 클릭 → '썸네일 없이 올리기'.")
     if r["썸네일"] != "없음":
@@ -359,17 +364,45 @@ def auto_all(ui):
     build_excel(ui)
     rows = core.read_rows()
     new = [r for r in rows if r["상태"] == ""]
-    if new:  # 썸네일을 보며 제목을 고르는 창 (기본: 지금 제목 = SEO 추천 1순위)
-        titles = ui.review_titles(new)
-        if titles is None:
+    if new:  # 썸네일을 보며 제목(과 썸네일 문구)을 고르는 창. 처음 값은 SEO 추천
+        picked = ui.review_titles(new)
+        if picked is None:
             return ui.log("제목 확인을 취소했습니다. '2. 자동 처리'를 다시 누르면 이어서 합니다.")
-        changed = [r for r in rows if titles.get(r["파일"], r["제목"]) != r["제목"]]
-        for r in changed:
-            r["제목"] = titles[r["파일"]]
+        changed = [(r, k, v) for r in new for k, v in picked.get(r["파일"], {}).items() if r[k] != v]
+        for r, k, v in changed:
+            r[k] = v
         if changed:
             _save(ui, rows)
+        auto = {c["name"] for c in core.load_config()["channels"] if c["thumb_auto"]}
+        targets = [r for r in new if r["채널"] in auto]
+        if targets:
+            make_thumbnails(ui, rows, targets)
+            made = [r for r in targets if not r["오류"]]
+            if made and not ui.review_thumbs(made):
+                return ui.log("썸네일 확인을 취소했습니다. 문구를 고친 뒤 '2. 자동 처리'를 다시 누르세요.")
     fill_all(ui)
     return bool(pin_targets(core.read_rows(), core.load_config()))
+
+
+def make_thumbnails(ui, rows, targets, force=False):
+    """썸네일 자동 만들기 채널의 영상들. Claude 답을 기다리는 시간이 길어서 4개씩 함께 만든다."""
+    import thumbs
+    cfg = core.load_config()
+    chans, key = {c["name"]: c for c in cfg["channels"]}, cfg.get("claude_key", "")
+    ui.log(f"썸네일 {len(targets)}개를 만듭니다" + ("" if key or os.environ.get("ANTHROPIC_API_KEY")
+                                                 else " (Claude API 키가 없어 실제 사진 없이, 강조는 마지막 줄)"))
+
+    def one(r):
+        try:
+            r["썸네일"] = core.rel(thumbs.make(chans[r["채널"]], r, key, ui.log, force))
+            r["오류"] = ""
+            ui.log(f"  ✓ 썸네일: {Path(r['파일']).name}")
+        except Exception as e:
+            r["오류"] = f"썸네일 만들기 실패: {e}"
+            ui.log(f"  ✗ 썸네일: {Path(r['파일']).name}: {e}")
+    with ThreadPoolExecutor(4) as pool:
+        list(pool.map(one, targets))
+    _save(ui, rows)
 
 
 # ---------- 4. 예약 걸기 ----------

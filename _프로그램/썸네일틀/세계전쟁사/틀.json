@@ -42,28 +42,71 @@
  "shade_dir": "bottom",
  "inset": {
   "boxes": [
-   [
-    720,
-    10,
-    550,
-    380
-   ],
-   [
-    560,
-    10,
-    600,
-    360
-   ],
-   [
-    470,
-    10,
-    790,
-    350
-   ]
+   {
+    "name": "오른쪽위_크게",
+    "box": [
+     690,
+     10,
+     580,
+     370
+    ],
+    "anchor": "tr"
+   },
+   {
+    "name": "오른쪽위_작게",
+    "box": [
+     830,
+     12,
+     440,
+     310
+    ],
+    "anchor": "tr"
+   },
+   {
+    "name": "왼쪽위_마크옆",
+    "box": [
+     178,
+     10,
+     500,
+     360
+    ],
+    "anchor": "tl"
+   },
+   {
+    "name": "위_가운데",
+    "box": [
+     360,
+     10,
+     560,
+     350
+    ],
+    "anchor": "t"
+   },
+   {
+    "name": "오른쪽_세로",
+    "box": [
+     880,
+     10,
+     390,
+     520
+    ],
+    "anchor": "tr"
+   },
+   {
+    "name": "왼쪽아래",
+    "box": [
+     20,
+     300,
+     455,
+     370
+    ],
+    "anchor": "bl"
+   }
   ],
   "border": 0,
   "tilt": 0,
-  "shadow": false
+  "shadow": false,
+  "_설명": "사진 자리들 (box는 들어갈 수 있는 최대 범위, 사진은 자기 비율대로 anchor 쪽에 붙음). 글자 자리마다 layouts.spots로 쓸 수 있는 번호를 정함"
  },
  "logo": {
   "file": "로고.png",
@@ -100,7 +143,8 @@
    "spots": [
     0,
     1,
-    2
+    2,
+    3
    ],
    "shade": "bottom",
    "weight": 6
@@ -116,7 +160,9 @@
    ],
    "align": "right",
    "valign": "top",
-   "spots": [],
+   "spots": [
+    5
+   ],
    "shade": "top",
    "weight": 2
   },
@@ -132,7 +178,11 @@
    "align": "left",
    "valign": "bottom",
    "spots": [
-    0
+    0,
+    1,
+    2,
+    3,
+    4
    ],
    "shade": "bottom",
    "weight": 2

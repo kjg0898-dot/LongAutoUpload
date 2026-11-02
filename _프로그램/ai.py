@@ -71,7 +71,7 @@ def _schema(props, required=None):
     return {"type": "object", "properties": props, "required": required or list(props), "additionalProperties": False}
 
 
-def plan(cl, base, text, title, desc, opts, recent=(), ctr=""):
+def plan(cl, base, text, title, desc, opts, recent=(), ctr="", photo=None):
     """이번 편의 디자인: 글자 자리·줄 나눔·강조할 말·색 조합·글씨체·크기·실제 사진 자리·검색어.
     opts: thumbs.options()가 만든 고를 거리, recent: 같은 채널에서 최근 쓴 조합 (되풀이하지 않게)."""
     layouts, fonts, styles, spots = opts.get("layouts", []), opts.get("fonts", []), opts.get("styles", []), opts.get("spots", [])
@@ -100,10 +100,13 @@ def plan(cl, base, text, title, desc, opts, recent=(), ctr=""):
         props["font"] = {"type": "string", "enum": list(fonts)}
     ask_text.append("size: 글자 크기 배율 0.85~1.1 (문구가 짧고 강할수록 크게, 배경이 복잡하면 조금 작게).")
     props["size"] = {"type": "number"}
-    if len(spots) > 1:
-        ask_text.append("spot: 실제 사진을 놓을 자리 번호. 문구 자리와 겹치지 않고 배경 속 얼굴·핵심 대상을 가리지 않는 곳. 자리(1280x720 기준 x,y,너비,높이): "
+    if len(spots) > 1 and photo is not None:
+        ask_text.append("spot: 두 번째로 첨부한 실제 사진을 놓을 자리 번호. 고른 layout에서 쓸 수 있는 자리 중에서, 배경 속 얼굴·핵심 대상을 가리지 않고 "
+                        "배경에서 비어 있거나 덜 중요한 곳. 사진은 자기 비율대로 그 자리 안에 들어감. 자리(1280x720 기준 x,y,너비,높이): "
                         + ", ".join(f"{i}번 {s}" for i, s in enumerate(spots)))
-        props["spot"] = {"type": "integer"}
+        ask_text.append("photo_size: 실제 사진 크기 0.7~1.0 (자리 대비). 사진이 주제를 잘 보여주면 크게, 배경 주인공이 크면 작게. "
+                        "단 휴대폰에서 썸네일이 작게 보여도 사진이 무엇인지 알아봐야 하니, 세밀한 사진(문서·지도·작은 인물이 많은 장면)은 큰 자리·큰 크기로.")
+        props["spot"], props["photo_size"] = {"type": "integer"}, {"type": "number"}
     ask_text.append("queries: 위키미디어 공용(Wikimedia Commons)에서 이 영상 주제의 실제 사진·기록·지도·유물을 찾을 영어 검색어 3개. "
                     "구체적인 인물·사건·장소·물건 이름으로, 각각 2~4단어로 짧게.")
     if recent:
@@ -113,7 +116,8 @@ def plan(cl, base, text, title, desc, opts, recent=(), ctr=""):
     if ctr:
         ask_text.append("이 채널 지난 영상들의 실제 썸네일 클릭률 (영상마다 평균, 괄호는 영상 수): " + ctr
                         + ". 클릭률이 높았던 자리·색·글씨체를 더 자주 고르되, 영상 수가 적으면 참고만 하고 이 사진에 안 맞으면 쓰지 말 것.")
-    out = ask(cl, [image_block(base), {"type": "text", "text": "\n".join(ask_text)}], _schema(props))
+    images = [image_block(base)] + ([{"type": "text", "text": "넣을 실제 사진:"}, image_block(photo, 512)] if photo is not None else [])
+    out = ask(cl, images + [{"type": "text", "text": "\n".join(ask_text)}], _schema(props))
     out["accents"] = [a for a in out.get("accents", []) if a.strip() and a.strip() in text]  # 문구에 없는 말은 버림
     return out
 

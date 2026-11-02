@@ -524,7 +524,7 @@ def test_auto_thumbnails_with_claude():
     saved = (ai.client, ai.plan, ai.find_photo, ai.queries)
     ai.client = lambda key: calls.append(("client", key)) or "CL"
     ai.queries = lambda cl, title, desc, text: calls.append(("queries", title)) or ["Seoul 1950"]
-    ai.plan = lambda cl, base, text, title, desc, opts, recent=(), ctr="": calls.append(("plan", text)) or {
+    ai.plan = lambda cl, base, text, title, desc, opts, recent=(), ctr="", photo=None: calls.append(("plan", text)) or {
         "side": "right", "accents": ["명언"], "queries": []}
     ai.find_photo = lambda cl, queries, text, title, log, skip=(), desc="": calls.append(("photo", queries)) or (
         Image.new("RGB", (800, 600), "red"), "File:Seoul.jpg")
@@ -825,7 +825,23 @@ def test_channel_template_wwh():
         cx, cy = 12 + logo.width // 2, 7 + logo.height // 2
         got, want = img.getpixel((cx, cy - 30)), logo.getpixel((logo.width // 2, logo.height // 2 - 30))[:3]
         assert sum(abs(a - b) for a, b in zip(got, want)) < 30, (got, want)  # 마크 그대로
-        assert img.getpixel((1000, 150))[0] > 150  # 위쪽 실제 사진(빨강)
+        x, y, w, h = img.info["layout"]["photo"]["box"]
+        assert img.getpixel((x + w // 2, y + h // 2))[0] > 150 and y + h <= 380  # 실제 사진(빨강)은 글자 위쪽 어딘가
+        # 사진 자리·크기는 편마다: 자리 여럿 중에서, 사진 비율대로 (세로 사진은 세로로 긴 칸)
+        seen = set()
+        for i in range(12):
+            info = thumbs.compose(ch, Image.new("RGB", (1600, 900), (40, 60, 80)), "300발 쏴야 / 겨우 1명", None,
+                                  Image.new("RGB", (600, 800), (200, 0, 0)), random.Random(i)).info["layout"]
+            bx, by, bw, bh = info["photo"]["box"]
+            assert bh > bw and 0.7 <= info["photo"]["size"] <= 1.0, info["photo"]  # 세로 사진 → 세로 칸
+            assert bw * bh >= 0.9 * thumbs.MIN_PHOTO, info["photo"]  # 휴대폰에서도 알아볼 만한 크기
+            for x0, y0, x1, y1 in info["boxes"]:  # 사진과 글자 줄이 겹치지 않음
+                assert bx + bw <= x0 or bx >= x1 or by + bh <= y0 or by >= y1, info
+            seen.add(info["photo"]["spot"])
+        assert len(seen) >= 3, seen
+        tall = thumbs._place([880, 10, 390, 520], "tr", 0.5, 1.0)
+        wide = thumbs._place([690, 10, 580, 370], "tr", 2.5, 0.8)
+        assert tall[2] < tall[3] and tall[0] + tall[2] == 1270 and wide[2] > wide[3] and wide[0] + wide[2] == 1270
         assert img.getpixel((640, 360)) != img.getpixel((640, 690))  # 아래쪽 글자·그늘
         checks, points = thumbs.check(img)  # 코드로 재는 점검: 글자 높이·단어 수·대비·밝기·가림 자리
         assert len(checks) == 7 and 0 <= points <= 100, checks

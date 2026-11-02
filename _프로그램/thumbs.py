@@ -28,7 +28,7 @@ DEFAULT_TEMPLATE = {
                {"fill": "#FFFFFF", "accent": "#FF5A1F", "stroke": "#111111"}],
     "shade": 0.6,  # 글자 쪽을 어둡게 (0~1)
     "inset": {"box": [800, 60, 440, 400], "border": 8, "border_color": "#FFFFFF", "tilt": 3},
-    "logo": {"file": "로고.png", "pos": [40, 28], "width": 0},  # width 0이면 로고 파일 크기 그대로
+    "logo": {"file": "로고.png", "pos": [28, 20], "width": 150},  # 1280x720 기준 너비 (0이면 로고 파일 크기 그대로)
     "jitter": 0.04,  # 글자 크기·위치를 이만큼 안에서 매번 조금씩 바꿈
 }
 WINDOWS_FONTS = [Path("C:/Windows/Fonts/malgunbd.ttf"), Path("C:/Windows/Fonts/malgun.ttf")]

@@ -899,6 +899,8 @@ def test_channel_template_wwh():
                              Image.new("RGB", (800, 600), (200, 0, 0)), random.Random(1))
         assert img.getpixel((3, 360))[0] > 240 and img.getpixel((3, 360))[2] < 60  # 노란 테두리
         logo = Image.open(Path(d) / "세계전쟁사" / "로고_기본.png").convert("RGBA")
+        lw = json.loads((Path(d) / "세계전쟁사" / "틀.json").read_text("utf-8"))["logo"]["width"] or logo.width
+        logo = logo.resize((lw, round(logo.height * lw / logo.width)), Image.LANCZOS)  # 틀이 정한 크기로 그려짐
         cx, cy = 12 + logo.width // 2, 7 + logo.height // 2
         got, want = img.getpixel((cx, cy - 30)), logo.getpixel((logo.width // 2, logo.height // 2 - 30))[:3]
         assert sum(abs(a - b) for a, b in zip(got, want)) < 30, (got, want)  # 마크 그대로

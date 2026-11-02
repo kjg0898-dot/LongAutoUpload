@@ -576,7 +576,7 @@ def test_thumbnail_variety():
         lay = out.info["layout"]
         assert lay["name"] == "오른쪽_위" and lay["lines"] == ["적군은 왜", "백기를 들었나"] and lay["style"] == 1
         assert lay["font"] == "BlackHanSans-Regular.ttf" and min(b[0] for b in lay["boxes"]) >= 500  # 오른쪽 자리
-        assert out.convert("RGB").getpixel((180, 200))[0] < 200  # 이 자리는 실제 사진을 넣지 않음
+        assert lay["photo"] and lay["photo"]["covered"] <= 0.25  # 글자가 오른쪽 위면 사진은 다른 곳, 글자에 조금만 가림
         bad = thumbs.compose(ch, base, "적군은 왜 백기를", {"lines": ["적군은", "다른 말"]}, None, random.Random(0)).info["layout"]
         assert "다른 말" not in bad["lines"]  # 글자를 바꾼 줄 나눔은 버림
         odd = thumbs.compose(ch, base, "적은 침상 / 밑에 있었다", {"lines": ["적은 침상 밑에", "있었다"]}, None, random.Random(0)).info["layout"]
@@ -630,6 +630,44 @@ def test_thumbnail_ctr():
             assert "다시 로그인" in ui.logs[-1], ui.logs[-1]
         finally:
             steps.yt.login, steps.yt.reach_reports = saved
+
+
+def test_inset_retry():
+    """Claude 점수에서 실제 사진이 배경 얼굴을 가린다고 하면 그 자리를 빼고 한 번 다시 만든다."""
+    import ai
+    import shutil as sh
+    import thumbs
+    from PIL import Image
+    with tempfile.TemporaryDirectory() as d:
+        thumbs.TEMPLATE_DIR = Path(d) / "틀"
+        sh.copytree(Path(__file__).parent / "썸네일틀" / "세계전쟁사", thumbs.TEMPLATE_DIR / "세계전쟁사")
+        ch = {**core.DEFAULT_CHANNEL, "name": "세계전쟁사", "folder": "세계전쟁사"}
+        folder = Path(d) / "채널"
+        (folder / core.MATERIAL / "1").mkdir(parents=True)
+        Image.new("RGB", (1600, 900), (40, 60, 80)).save(folder / core.MATERIAL / "1" / "a.png")
+        (folder / core.PHOTOS).mkdir()
+        Image.new("RGB", (800, 600), "red").save(folder / core.PHOTOS / "1.jpg")
+        (folder / core.PHOTOS / "1.json").write_text(json.dumps({"credit": "x.jpg"}), "utf-8")
+        reviews = iter([{"total": 70, "inset_ok": False, "better_spot": 3}, {"total": 85, "inset_ok": True},  # 1편: 옮겨서 해결
+                        {"total": 70, "inset_ok": False, "better_spot": 3}, {"total": 72, "inset_ok": False},  # 2편: 사진 없이
+                        {"total": 80, "inset_ok": True}])
+        asked = []
+        saved = (ai.client, ai.plan, ai.score)
+        ai.client = lambda key: "CL"
+        ai.plan = lambda *a, **k: {"layout": "아래_가운데", "spot": 0, "photo_size": 1.0, "accents": [], "queries": []}
+        ai.score = lambda *a, **k: asked.append(a[-1]) or next(reviews)
+        logs = []
+        try:
+            path = thumbs.make_for(ch, folder, 1, "300발 쏴야 / 겨우 1명", "제목", "설명", "sk-test", logs.append)
+            note = json.loads(path.with_suffix(".json").read_text("utf-8"))
+            assert note["review"]["total"] == 85 and note["used"]["photo"] == "위_가운데", note  # Claude가 말한 3번 자리
+            assert note["plan"]["avoid_spots"] == ["오른쪽위_크게"] and any("다른 자리" in m for m in logs), logs
+            assert len(asked[0]) == 5 and asked[0][3].startswith("3번 위_가운데"), asked[0]  # 이 글자 자리에서 쓸 수 있는 사진 자리만
+            path = thumbs.make_for(ch, folder, 1, "300발 쏴야 / 겨우 1명", "제목", "설명", "sk-test", logs.append, force=True)
+            note = json.loads(path.with_suffix(".json").read_text("utf-8"))
+            assert note["used"]["photo"] is None and note["review"]["total"] == 80 and "사진 없이" in logs[-1], (note, logs)
+        finally:
+            ai.client, ai.plan, ai.score = saved
 
 
 def test_ai_request_and_commons_filter():
@@ -826,7 +864,7 @@ def test_channel_template_wwh():
         got, want = img.getpixel((cx, cy - 30)), logo.getpixel((logo.width // 2, logo.height // 2 - 30))[:3]
         assert sum(abs(a - b) for a, b in zip(got, want)) < 30, (got, want)  # 마크 그대로
         x, y, w, h = img.info["layout"]["photo"]["box"]
-        assert img.getpixel((x + w // 2, y + h // 2))[0] > 150 and y + h <= 380  # 실제 사진(빨강)은 글자 위쪽 어딘가
+        assert img.getpixel((x + w // 4, y + h // 4))[0] > 150 and img.info["layout"]["photo"]["covered"] <= 0.25  # 실제 사진(빨강)
         # 사진 자리·크기는 편마다: 자리 여럿 중에서, 사진 비율대로 (세로 사진은 세로로 긴 칸)
         seen = set()
         for i in range(12):
@@ -834,9 +872,9 @@ def test_channel_template_wwh():
                                   Image.new("RGB", (600, 800), (200, 0, 0)), random.Random(i)).info["layout"]
             bx, by, bw, bh = info["photo"]["box"]
             assert bh > bw and 0.7 <= info["photo"]["size"] <= 1.0, info["photo"]  # 세로 사진 → 세로 칸
+            assert not (bx + bw > 850 and by + bh > 550) and by + bh <= 670, info["photo"]  # 영상 길이·진행 막대 자리는 피함
             assert bw * bh >= 0.9 * thumbs.MIN_PHOTO, info["photo"]  # 휴대폰에서도 알아볼 만한 크기
-            for x0, y0, x1, y1 in info["boxes"]:  # 사진과 글자 줄이 겹치지 않음
-                assert bx + bw <= x0 or bx >= x1 or by + bh <= y0 or by >= y1, info
+            assert thumbs._covered([bx, by, bw, bh], info["boxes"]) <= thumbs.MAX_COVER, info  # 글자와 조금만 겹침
             seen.add(info["photo"]["spot"])
         assert len(seen) >= 3, seen
         tall = thumbs._place([880, 10, 390, 520], "tr", 0.5, 1.0)

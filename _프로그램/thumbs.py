@@ -27,7 +27,7 @@ DEFAULT_TEMPLATE = {
                {"fill": "#FFE400", "accent": "#FF3B30", "stroke": "#000000"},
                {"fill": "#FFFFFF", "accent": "#FF5A1F", "stroke": "#111111"}],
     "shade": 0.6,  # 글자 쪽을 어둡게 (0~1)
-    "inset": {"box": [850, 70, 370, 270], "border": 8, "border_color": "#FFFFFF", "tilt": 3},
+    "inset": {"box": [800, 60, 440, 400], "border": 8, "border_color": "#FFFFFF", "tilt": 3},
     "logo": {"file": "로고.png", "pos": [40, 28], "width": 0},  # width 0이면 로고 파일 크기 그대로
     "jitter": 0.04,  # 글자 크기·위치를 이만큼 안에서 매번 조금씩 바꿈
 }
@@ -102,7 +102,7 @@ def _spots(tpl):
     return (inset.get("boxes") or [inset["box"]]) if inset else []
 
 
-MIN_PHOTO = 110_000  # 실제 사진 최소 넓이(px²): 화면의 약 12%. 이보다 작으면 썸네일이 작게 보일 때 무엇인지 안 보임
+MIN_PHOTO = 180_000  # 실제 사진 최소 넓이(px²): 화면의 약 20%. 이보다 작으면 썸네일이 작게 보일 때 무엇인지 안 보임
 
 
 def _place(region, anchor, photo_ratio, size):
@@ -120,6 +120,32 @@ def _place(region, anchor, photo_ratio, size):
     x = rx + rw - w if anchor in ("tr", "br") else rx + (rw - w) / 2 if anchor == "t" else rx
     y = ry + rh - h if anchor in ("bl", "br") else ry
     return [round(x), round(y), round(w), round(h)]
+
+
+MAX_COVER = 0.25  # 글자가 실제 사진을 가려도 되는 만큼 (사진 넓이 대비). 글자는 사진 위에 외곽선과 함께 그려짐
+
+
+def _covered(b, text_boxes):
+    """사진 칸 [x,y,w,h] 중 글자 줄들이 덮는 비율."""
+    x, y, w, h = b
+    inter = sum(max(0, min(x + w, x1) - max(x, x0)) * max(0, min(y + h, y1) - max(y, y0)) for x0, y0, x1, y1 in text_boxes)
+    return inter / (w * h) if w * h else 1.0
+
+
+def _line_boxes(lines, font, box, side, t, stroke):
+    """글자를 그리기 전에 줄마다 차지할 자리 (x0,y0,x1,y1) — 그리는 계산과 같게."""
+    if not font:
+        return []
+    d = ImageDraw.Draw(Image.new("L", (1, 1)))
+    step = font.size * (1 + t["line_gap"])
+    y = box[1] + {"top": 0, "bottom": box[3] - step * len(lines)}.get(t["valign"], (box[3] - step * len(lines)) / 2)
+    out = []
+    for line in lines:
+        width = font.getbbox(line, stroke_width=stroke)[2]
+        x = {"left": box[0], "center": box[0] + (box[2] - width) / 2}.get(side, box[0] + box[2] - width)
+        out.append(d.textbbox((x, y), line, font=font, stroke_width=stroke))
+        y += step
+    return out
 
 
 def _box_xyxy(box):
@@ -235,43 +261,6 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
         if logo.get("width"):
             mark = mark.resize((logo["width"], round(mark.height * logo["width"] / mark.width)), Image.LANCZOS)
 
-    inset = tpl.get("inset")
-    spots = _spots(tpl)
-    allowed = [i for i in range(len(spots)) if spots_ok is None or i in spots_ok]  # 글자 자리에 맞는 사진 자리
-    photo_info = None
-    if photo and allowed:  # 실제 사진: 글자를 피한 자리에 사진 비율대로, 크기도 편마다 (틀에 따라 흰 테두리·그림자·기울임)
-        src = _image(photo)
-        size = plan["photo_size"] if isinstance(plan.get("photo_size"), (int, float)) else rnd.uniform(0.8, 1.0)
-        size = min(1.0, max(0.7, float(size)))
-        fits = [k for k in allowed if (lambda b: b[2] * b[3])(_place(*_spot(spots[k], k)[1:], src.width / src.height, 1.0))
-                >= 0.9 * MIN_PHOTO]  # 이 사진 비율로 넣으면 너무 작아지는 자리는 뺌 (세로 사진 + 작은 자리)
-        allowed = fits or allowed
-        if plan.get("spot") in allowed:  # Claude가 배경을 보고 고른 자리
-            i = plan["spot"]
-        else:  # 없으면 배경이 덜 복잡한 곳(하늘·땅 등, 얼굴·주인공이 아닐 가능성이 큰 곳)을 더 자주
-            edges = canvas.convert("L").filter(ImageFilter.FIND_EDGES)
-            busy = [ImageStat.Stat(edges.crop(_box_xyxy(_place(_spot(spots[k], k)[1], _spot(spots[k], k)[2],
-                                                                src.width / src.height, size)))).mean[0] for k in allowed]
-            i = rnd.choices(allowed, weights=[1 / (b + 4) ** 2 for b in busy])[0]
-        spot_name, region, anchor = _spot(spots[i], i)
-        spot = _place(region, anchor, src.width / src.height, size)
-        x, y, w, h = _mirror(spot, side) if mirror and side != "center" else spot  # 사진 칸은 '글자 왼쪽' 기준
-        photo_info = {"spot": spot_name, "size": round(size, 2), "box": [x, y, w, h]}
-        if mark:  # 채널 마크를 가리지 않게 마크 아래로
-            lx, ly = logo["pos"]
-            if x < lx + mark.width and lx < x + w and y < ly + mark.height and ly < y + h:
-                y = ly + mark.height + 24
-        pic = _cover(src, w, h)
-        b = inset.get("border", 0)
-        framed = Image.new("RGBA", (w + 2 * b, h + 2 * b), inset.get("border_color", "#FFFFFF"))
-        framed.paste(pic, (b, b))
-        framed = framed.rotate(rnd.uniform(-1, 1) * inset.get("tilt", 0), expand=True, resample=Image.BICUBIC)
-        if inset.get("shadow", True):
-            shadow = Image.new("RGBA", framed.size, (0, 0, 0, 0))
-            shadow.paste((0, 0, 0, 150), mask=framed.split()[3])
-            canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(10)), (x - b + 10, y - b + 12))
-        canvas.alpha_composite(framed, (x - b, y - b))
-
     box = [round(v * (1 + rnd.uniform(-jit, jit))) if i < 2 else v for i, v in enumerate(t["box"])]
     box = _mirror(box, side) if mirror and side != "center" else box
     stroke = t["stroke"]
@@ -298,6 +287,58 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
         if bigger.size < font.size * 1.15:
             break
         lines, font = trial, bigger
+    inset = tpl.get("inset")
+    spots = _spots(tpl)
+    allowed = [i for i in range(len(spots)) if spots_ok is None or i in spots_ok]  # 이 글자 자리에서 쓸 수 있는 사진 자리
+    photo_info = None
+    if photo and allowed:  # 실제 사진: 사진 비율대로, 편마다 다른 자리·크기. 글자와 조금 겹쳐도 됨 (글자가 위에 그려짐)
+        src = _image(photo)
+        ratio = src.width / src.height
+        size = plan["photo_size"] if isinstance(plan.get("photo_size"), (int, float)) else rnd.uniform(0.92, 1.0)
+        size = min(1.0, max(0.9, float(size)))  # 크게 (글자에 너무 가리면 아래에서 줄임)
+        text_boxes = _line_boxes(lines, font, box, side, t, stroke)
+
+        def placed(k, s):
+            _, region, anchor = _spot(spots[k], k)
+            b = _place(region, anchor, ratio, s)
+            return _mirror(b, side) if mirror and side != "center" else b  # 사진 칸은 '글자 왼쪽' 기준
+        ok = {}  # 자리마다: 글자가 사진을 MAX_COVER 넘게 가리지 않는 가장 큰 크기 (휴대폰에서도 보이는 크기 이상만)
+        for k in allowed:
+            for s in (size, size - 0.05, size - 0.1, size - 0.15, size - 0.2):
+                b = placed(k, max(0.7, s))
+                if _covered(b, text_boxes) <= MAX_COVER and b[2] * b[3] >= 0.9 * MIN_PHOTO:
+                    ok[k] = max(0.7, s)
+                    break
+        ok = {k: s for k, s in ok.items() if _spot(spots[k], k)[0] not in plan.get("avoid_spots", ())} or ok  # 점수에서 걸린 자리는 빼고
+        if not ok:  # 어디도 안 맞으면 글자에 가장 덜 가리는 자리
+            k = min(allowed, key=lambda k: _covered(placed(k, 0.8), text_boxes))
+            ok = {k: 0.8}
+        if plan.get("spot") in ok:  # Claude가 배경을 보고 고른 자리
+            i = plan["spot"]
+        else:  # 없으면 배경이 덜 복잡한 곳(하늘·땅 등, 얼굴·주인공이 아닐 가능성이 큰 곳)을 더 자주
+            edges = canvas.convert("L").filter(ImageFilter.FIND_EDGES)
+            keys = list(ok)
+            busy = [ImageStat.Stat(edges.crop(_box_xyxy(placed(k, ok[k])))).mean[0] for k in keys]
+            i = rnd.choices(keys, weights=[1 / (b + 4) ** 2 for b in busy])[0]
+        size = ok[i]
+        x, y, w, h = placed(i, size)
+        if mark:  # 채널 마크를 가리지 않게 마크 아래로
+            lx, ly = logo["pos"]
+            if x < lx + mark.width and lx < x + w and y < ly + mark.height and ly < y + h:
+                y = ly + mark.height + 24
+        photo_info = {"spot": _spot(spots[i], i)[0], "size": round(size, 2), "box": [x, y, w, h],
+                      "covered": round(_covered([x, y, w, h], text_boxes), 2)}
+        pic = _cover(src, w, h)
+        b = inset.get("border", 0)
+        framed = Image.new("RGBA", (w + 2 * b, h + 2 * b), inset.get("border_color", "#FFFFFF"))
+        framed.paste(pic, (b, b))
+        framed = framed.rotate(rnd.uniform(-1, 1) * inset.get("tilt", 0), expand=True, resample=Image.BICUBIC)
+        if inset.get("shadow", True):
+            shadow = Image.new("RGBA", framed.size, (0, 0, 0, 0))
+            shadow.paste((0, 0, 0, 150), mask=framed.split()[3])
+            canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(10)), (x - b + 10, y - b + 12))
+        canvas.alpha_composite(framed, (x - b, y - b))
+
     glow = t.get("glow", 0)
     layer = Image.new("RGBA", SIZE, (0, 0, 0, 0)) if glow and lines else None
     draw = ImageDraw.Draw(layer or canvas)
@@ -469,7 +510,8 @@ def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=
         stats = ctr_stats(ch)
         if use_ai:
             import ai
-            plan = ai.plan(ai.client(key), base, text, title, desc, options(ch, tpl), recent[-4:], ctr_text(stats), photo)
+            ratio = (lambda im: im.width / im.height)(Image.open(photo)) if photo else None
+            plan = ai.plan(ai.client(key), base, text, title, desc, options(ch, tpl, ratio), recent[-4:], ctr_text(stats), photo)
         else:  # Claude 없이: 최근 두 편에 쓴 글자 자리는 피하고, 클릭률이 좋았던 자리를 더 자주
             plan = {"avoid": [r.get("layout") for r in recent[-2:]], "boost": boost(stats.get("layout", {}))}
         img = compose(ch, base, text, plan, photo, rnd)
@@ -481,7 +523,27 @@ def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=
     checks, points = check(img)
     if use_ai:
         try:
-            review = ai.score(ai.client(key), img, title, text, desc, examples(ch), checks)
+            lay_def = next((x for x in tpl.get("layouts") or [] if x["name"] == used["layout"]), {})
+            names = options(ch, tpl, (lambda im: im.width / im.height)(Image.open(photo)) if photo else None)["spots"]
+            spot_list = [f"{i}번 {names[i]}" for i in lay_def.get("spots", range(len(names)))]
+            review = ai.score(ai.client(key), img, title, text, desc, examples(ch), checks, spot_list)
+            for attempt in (1, 2):  # 실제 사진이 배경 얼굴·주인공을 가리면: Claude가 말한 자리로 한 번, 그래도면 사진 없이
+                spot = (img.info["layout"].get("photo") or {}).get("spot")
+                if review.get("inset_ok") is not False or not spot:
+                    break
+                better = review.get("better_spot")
+                if attempt == 1 and isinstance(better, int) and better >= 0:
+                    log(f"    {num}번: 실제 사진이 배경을 가려 다른 자리({better}번)로 다시 만듭니다")
+                    plan = plan | {"avoid_spots": plan.get("avoid_spots", []) + [spot], "spot": better}
+                    img = compose(ch, base, text, plan, photo, rnd)
+                else:
+                    log(f"    {num}번: 실제 사진을 둘 자리가 마땅치 않아 사진 없이 만듭니다")
+                    plan = plan | {"no_photo": True}
+                    img = compose(ch, base, text, plan, None, rnd)
+                checks, points = check(img)
+                review = ai.score(ai.client(key), img, title, text, desc, examples(ch), checks, spot_list)
+                lay = img.info["layout"]
+                used |= {"photo": (lay["photo"] or {}).get("spot"), "photo_size": (lay["photo"] or {}).get("size")}
         except Exception as e:
             log(f"    (Claude 점수 실패: {e})")
     save(img, path)
@@ -490,10 +552,14 @@ def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=
     return path
 
 
-def options(ch, tpl):
-    """Claude에게 줄 이 채널의 고를 거리: 글자 자리·색 조합·글씨체·사진 자리."""
+def options(ch, tpl, ratio=None):
+    """Claude에게 줄 이 채널의 고를 거리: 글자 자리·색 조합·글씨체·사진 자리.
+    ratio(실제 사진 가로÷세로)를 주면 사진 자리마다 이 사진이 실제로 차지할 칸도 알려준다 (얼굴을 가리지 않게 고르도록)."""
+    def spot_text(i, s):
+        name, region, anchor = _spot(s, i)
+        return f"{name} {region}" + (f" → 이 사진은 약 {_place(region, anchor, ratio, 0.95)}" if ratio else "")
     out = {"sides": tpl["text"]["sides"], "max_lines": tpl["text"]["max_lines"],
-           "spots": [(lambda n, b, a: f"{n} {b}")(*_spot(s, i)) for i, s in enumerate(_spots(tpl))],
+           "spots": [spot_text(i, s) for i, s in enumerate(_spots(tpl))],
            "fonts": sorted({p.name for p in fonts(ch, tpl)}),
            "styles": [s.get("_설명") or f"줄 색 {s.get('line_fills') or s.get('fill')}, 강조 {s.get('accent')}" for s in tpl["styles"]]}
     if tpl.get("layouts"):

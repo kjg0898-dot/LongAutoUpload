@@ -102,9 +102,10 @@ def plan(cl, base, text, title, desc, opts, recent=(), ctr="", photo=None):
     props["size"] = {"type": "number"}
     if len(spots) > 1 and photo is not None:
         ask_text.append("spot: 두 번째로 첨부한 실제 사진을 놓을 자리 번호. 고른 layout에서 쓸 수 있는 자리 중에서, 배경 속 얼굴·핵심 대상을 가리지 않고 "
-                        "배경에서 비어 있거나 덜 중요한 곳. 사진은 자기 비율대로 그 자리 안에 들어감. 자리(1280x720 기준 x,y,너비,높이): "
+                        "배경에서 비어 있거나 덜 중요한 곳 (→ 뒤의 칸이 이 사진이 실제로 차지할 곳이니 그 안에 배경 인물 얼굴이 들어가면 안 됨). 사진은 자기 비율대로 그 자리 안에 들어가고, 글자와 조금(사진의 4분의 1까지) 겹쳐도 됨 "
+                        "(글자가 외곽선과 함께 위에 그려짐). 자리(1280x720 기준 x,y,너비,높이): "
                         + ", ".join(f"{i}번 {s}" for i, s in enumerate(spots)))
-        ask_text.append("photo_size: 실제 사진 크기 0.7~1.0 (자리 대비). 사진이 주제를 잘 보여주면 크게, 배경 주인공이 크면 작게. "
+        ask_text.append("photo_size: 실제 사진 크기 0.9~1.0 (자리 대비). 사진이 주제를 잘 보여주면 크게, 배경 주인공이 크면 조금 작게. "
                         "단 휴대폰에서 썸네일이 작게 보여도 사진이 무엇인지 알아봐야 하니, 세밀한 사진(문서·지도·작은 인물이 많은 장면)은 큰 자리·큰 크기로.")
         props["spot"], props["photo_size"] = {"type": "integer"}, {"type": "number"}
     ask_text.append("queries: 위키미디어 공용(Wikimedia Commons)에서 이 영상 주제의 실제 사진·기록·지도·유물을 찾을 영어 검색어 3개. "
@@ -143,7 +144,7 @@ RUBRIC = (("legibility", "작은 화면(168x94)에서도 글자가 읽히는가"
           ("distinct", "제목을 되풀이하지 않고 새 궁금증을 더하는가", 5))
 
 
-def score(cl, img, title, text, desc, examples=(), checks=()):
+def score(cl, img, title, text, desc, examples=(), checks=(), spots=()):
     """완성 썸네일 종합 점수. 먼저 정책(잔인·시신·선정·극단주의 상징·욕설·거짓 약속) 통과 여부, 그다음 항목별 점수와 고칠 점."""
     content = [{"type": "text", "text": "평가할 썸네일:"}, image_block(img, 1024)]
     for i, p in enumerate(examples):
@@ -156,10 +157,17 @@ def score(cl, img, title, text, desc, examples=(), checks=()):
         "2) 항목별 점수 (0~배점): " + ", ".join(f"{k} = {d} (0~{w})" for k, d, w in RUBRIC) + "\n"
         "3) tips: 고치면 좋은 점 1~3개, 짧은 한국어로. 이미 좋으면 빈 목록.\n"
         "4) title_score: 영상 제목만 따로 0~100점 (검색·추천에서 눌러보고 싶은가: 앞 40자 안에 핵심 말, 구체적인 숫자·인물·사건, "
-        "궁금증, 과장·낚시 없음, 썸네일 문구와 겹치지 않고 서로 보완). title_tips: 제목을 고치면 좋은 점 0~2개, 짧은 한국어로.")})
+        "궁금증, 과장·낚시 없음, 썸네일 문구와 겹치지 않고 서로 보완). title_tips: 제목을 고치면 좋은 점 0~2개, 짧은 한국어로.\n"
+        "5) inset_ok: 썸네일 위에 따로 얹은 네모난 실제 사진이 배경 그림 속 인물의 얼굴이나 핵심 대상을 가리지 않으면 true, "
+        "가리면 false (얹은 사진이 없으면 true)."
+        + ("\n6) better_spot: inset_ok가 false일 때, 같은 사진을 옮기면 배경 인물 얼굴·핵심 대상과 글자를 가리지 않을 자리 번호 "
+           "(1280x720 기준 x,y,너비,높이): " + ", ".join(spots) + ". 그런 자리가 없으면 -1. inset_ok가 true면 -1." if spots else ""))})
     props = {"policy_ok": {"type": "boolean"}, "policy_reason": {"type": "string"},
              "tips": {"type": "array", "items": {"type": "string"}},
-             "title_score": {"type": "integer"}, "title_tips": {"type": "array", "items": {"type": "string"}}}
+             "title_score": {"type": "integer"}, "title_tips": {"type": "array", "items": {"type": "string"}},
+             "inset_ok": {"type": "boolean"}}
+    if spots:
+        props["better_spot"] = {"type": "integer"}
     props |= {k: {"type": "integer"} for k, _, _ in RUBRIC}
     out = ask(cl, content, _schema(props))
     out["total"] = sum(max(0, min(w, int(out.get(k, 0)))) for k, _, w in RUBRIC) if out.get("policy_ok", True) else 0

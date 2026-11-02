@@ -307,6 +307,50 @@ def test_update_keeps_private_files():
         assert update.apply(buf.getvalue(), root) == 0  # 두 번째는 바뀔 것 없음
 
 
+def test_seo_format_with_thumbnail_and_prompt_sections():
+    """썸네일 문구·영상 프롬프트 칸이 있는 SEO 형식: 썸네일 쪽 '추천 1순위'에 제목이 바뀌지 않고, 프롬프트는 댓글에 안 섞인다."""
+    text = """============================================================
+[2026-10-21 19:24] 행 4 | 순번 3 | 제목: 원본 제목
+============================================================
+
+▣ 채널 판별: [역사]
+>> 원본 제목: [원본 제목]
+---
+제목 (3안)
+1. 첫째 제목
+2. 둘째 제목
+3. 셋째 제목
+추천 1순위: 2 — 이유 설명
+---
+썸네일 문구 (3안)
+1. 문구 하나
+2. 문구 둘
+3. 문구 셋
+추천 1순위: 1 — 썸네일 이유
+---
+설명글 & 해시태그
+설명 본문입니다.
+
+#역사 #전쟁사
+---
+고정 댓글
+고정 댓글 첫 줄 ❤️
+둘째 줄
+---
+영상 프롬프트
+[Scene 1 – 장면],(8K, Cinematic)
+---
+썸네일
+추천 프롬프트: 16 대 9 구도
+"""
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "seo.txt"
+        f.write_text(text, "utf-8")
+        [e] = core.load_entries([f])
+    assert e["num"] == 3 and e["title"] == "둘째 제목" and e["titles"] == ["첫째 제목", "둘째 제목", "셋째 제목"], e
+    assert e["desc"] == "설명 본문입니다.\n\n#역사 #전쟁사" and e["comment"] == "고정 댓글 첫 줄 ❤️\n둘째 줄", e
+
+
 def test_playlist_ids():
     url = "https://www.youtube.com/playlist?list=PLabcdefghij12"
     assert core.playlist_ids(f"{url}, PLzzzzzzzzzz9\nPLabcdefghij12") == ["PLabcdefghij12", "PLzzzzzzzzzz9"]

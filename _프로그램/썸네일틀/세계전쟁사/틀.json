@@ -1,0 +1,16 @@
+{
+  "_설명": "세계전쟁사 채널 썸네일 틀 (채널의 최근 썸네일 10개를 보고 만듦): 노란 테두리, 아래 가운데 두 줄(흰색·노랑, 강조는 빨강), 위쪽에 실제 사진(테두리 없음), 왼쪽 위 채널 마크",
+  "font": "",
+  "text": {"box": [30, 392, 1220, 290], "valign": "bottom", "size_max": 118, "size_min": 64, "max_lines": 2,
+           "stroke": 9, "line_gap": 0.02, "sides": ["center"]},
+  "styles": [
+    {"line_fills": ["#FFFFFF", "#FFEB00"], "accent": "#FF3B2F", "stroke": "#000000"},
+    {"line_fills": ["#FFFFFF", "#FFEB00"], "accent": "#FFEB00", "stroke": "#000000"}
+  ],
+  "shade": 0.55,
+  "shade_dir": "bottom",
+  "inset": {"boxes": [[720, 10, 550, 380], [560, 10, 600, 360], [470, 10, 790, 350]], "border": 0, "tilt": 0, "shadow": false},
+  "logo": {"file": "로고.png", "pos": [12, 7], "width": 0},
+  "border": {"width": 10, "color": "#FFEB00"},
+  "jitter": 0.02
+}

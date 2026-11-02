@@ -2,6 +2,8 @@
 import base64
 import io
 import json
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -96,12 +98,20 @@ def queries(cl, title, desc, text):
 
 def search_commons(query, limit=6):
     """위키미디어 공용에서 저작권이 풀린(퍼블릭 도메인·CC0) 사진만. [{'title', 'url'}]"""
+    # 썸네일은 위키미디어 표준 크기(960)로 받는다: 다른 크기는 서버가 막을 수 있음 (https://w.wiki/GHai)
     params = {"action": "query", "format": "json", "generator": "search", "gsrnamespace": 6, "gsrlimit": limit,
               "gsrsearch": f"{query} filetype:bitmap", "prop": "imageinfo", "iiprop": "url|extmetadata|size",
-              "iiurlwidth": 1000, "iiextmetadatafilter": "LicenseShortName|Copyrighted"}
+              "iiurlwidth": 960, "iiextmetadatafilter": "LicenseShortName|Copyrighted"}
     req = urllib.request.Request(f"{COMMONS}?{urllib.parse.urlencode(params)}", headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=30) as res:
-        pages = json.load(res).get("query", {}).get("pages", {})
+    for attempt in range(3):  # 요청이 몰렸다(429)고 하면 잠깐 쉬었다가 다시
+        try:
+            with urllib.request.urlopen(req, timeout=30) as res:
+                pages = json.load(res).get("query", {}).get("pages", {})
+            break
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or attempt == 2:
+                raise
+            time.sleep(min(int(e.headers.get("Retry-After") or 5), 20))
     out = []
     for p in sorted(pages.values(), key=lambda p: p.get("index", 0)):
         info = (p.get("imageinfo") or [{}])[0]
@@ -114,8 +124,14 @@ def search_commons(query, limit=6):
 
 def download(url):
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=60) as res:
-        return Image.open(io.BytesIO(res.read())).convert("RGB")
+    for attempt in range(3):  # 요청이 몰렸다(429)고 하면 잠깐 쉬었다가 다시
+        try:
+            with urllib.request.urlopen(req, timeout=60) as res:
+                return Image.open(io.BytesIO(res.read())).convert("RGB")
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or attempt == 2:
+                raise
+            time.sleep(min(int(e.headers.get("Retry-After") or 5), 20))
 
 
 def find_photo(cl, queries, text, title, log=print, per_query=4, limit=6, skip=()):

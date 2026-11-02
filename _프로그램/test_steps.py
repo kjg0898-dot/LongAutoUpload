@@ -718,6 +718,27 @@ def test_prep_flow():
         assert not any("후보" in p for p in problems if "_1_" in p), problems
 
 
+def test_channel_template_wwh():
+    """세계전쟁사 틀: 노란 테두리, 가운데 두 줄, 채널에서 따 온 기본 로고가 같은 자리에 그대로."""
+    import random
+    import shutil as sh
+    import thumbs
+    from PIL import Image
+    with tempfile.TemporaryDirectory() as d:
+        thumbs.TEMPLATE_DIR = Path(d)
+        sh.copytree(Path(__file__).parent / "썸네일틀" / "세계전쟁사", Path(d) / "세계전쟁사")
+        ch = {**core.DEFAULT_CHANNEL, "name": "세계전쟁사", "folder": "세계전쟁사"}
+        img = thumbs.compose(ch, Image.new("RGB", (1600, 900), (40, 60, 80)), "300발 쏴야 겨우 1명 쓰러졌다", None,
+                             Image.new("RGB", (800, 600), (200, 0, 0)), random.Random(1))
+        assert img.getpixel((3, 360))[0] > 240 and img.getpixel((3, 360))[2] < 60  # 노란 테두리
+        logo = Image.open(Path(d) / "세계전쟁사" / "로고_기본.png").convert("RGBA")
+        cx, cy = 12 + logo.width // 2, 7 + logo.height // 2
+        got, want = img.getpixel((cx, cy - 30)), logo.getpixel((logo.width // 2, logo.height // 2 - 30))[:3]
+        assert sum(abs(a - b) for a, b in zip(got, want)) < 30, (got, want)  # 마크 그대로
+        assert img.getpixel((1000, 150))[0] > 150  # 위쪽 실제 사진(빨강)
+        assert img.getpixel((640, 360)) != img.getpixel((640, 690))  # 아래쪽 글자·그늘
+
+
 def test_publish_times():
     fake = FakeYouTube(["a.mp4", "b.mp4", "c.mp4"])
     fake.videos_db["vid0"]["status"]["publishAt"] = "2026-10-26T03:15:00Z"  # 예약

@@ -103,6 +103,13 @@ def _segments(line, accents):
     return out
 
 
+def _split(line):
+    """가운데에 가까운 띄어쓰기에서 두 줄로."""
+    spaces = [i for i, ch in enumerate(line) if ch == " "]
+    cut = min(spaces, key=lambda i: abs(i - len(line) / 2))
+    return [line[:cut].strip(), line[cut:].strip()]
+
+
 def _fit(lines, font_file, box, t, stroke):
     """박스에 들어가는 가장 큰 글자 크기."""
     for size in range(t["size_max"], t["size_min"] - 1, -2):
@@ -115,7 +122,9 @@ def _fit(lines, font_file, box, t, stroke):
 
 
 def compose(ch, base, text, plan=None, photo=None, rnd=None):
-    """썸네일 그림. plan: {'side': 'left'|'right', 'accents': [...]} (없으면 무작위·마지막 줄 강조)."""
+    """썸네일 그림. plan: {'side': 'left'|'right'|'center', 'accents': [...]} (없으면 무작위·마지막 줄 강조).
+    틀에서 고를 수 있는 것: 글자 가운데 정렬(sides ["center"]), 줄마다 색(styles.line_fills), 바깥 테두리(border),
+    아래쪽 그늘(shade_dir "bottom"), 실제 사진 자리 여러 개(inset.boxes, 매번 하나), 기본 로고(로고_기본.png)."""
     rnd = rnd or random.Random()
     tpl, plan = load_template(ch), plan or {}
     t = tpl["text"]
@@ -131,24 +140,28 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
     jit = tpl.get("jitter", 0)
 
     canvas = _cover(_image(base), *SIZE).convert("RGBA")
-    if tpl.get("shade"):  # 글자 쪽으로 갈수록 어두워지는 그늘 (글자가 잘 읽히게)
+    if tpl.get("shade"):  # 글자 쪽(또는 아래쪽)으로 갈수록 어두워지는 그늘 (글자가 잘 읽히게)
+        bottom = tpl.get("shade_dir") == "bottom" or side == "center"
         shade = Image.new("L", SIZE)
-        for x in range(SIZE[0]):
-            k = 1 - x / SIZE[0] if side == "left" else x / SIZE[0]
-            shade.paste(int(255 * tpl["shade"] * max(0.0, k * 1.6 - 0.3)), (x, 0, x + 1, SIZE[1]))
+        for i in range(SIZE[1] if bottom else SIZE[0]):
+            k = i / SIZE[1] if bottom else (1 - i / SIZE[0] if side == "left" else i / SIZE[0])
+            band = (0, i, SIZE[0], i + 1) if bottom else (i, 0, i + 1, SIZE[1])
+            shade.paste(int(255 * tpl["shade"] * max(0.0, k * 1.6 - 0.6)), band)
         canvas = Image.composite(Image.new("RGBA", SIZE, (0, 0, 0, 255)), canvas, shade)
 
     logo = tpl.get("logo") or {}
-    logo_file = template_dir(ch) / logo.get("file", "")
+    logo_file = next((f for f in (template_dir(ch) / logo.get("file", ""), template_dir(ch) / "로고_기본.png")
+                      if logo.get("file") and f.is_file()), None)  # 내가 넣은 로고.png가 먼저, 없으면 채널에서 따 온 기본 로고
     mark = None
-    if logo.get("file") and logo_file.is_file():
+    if logo_file:
         mark = Image.open(logo_file).convert("RGBA")
         if logo.get("width"):
             mark = mark.resize((logo["width"], round(mark.height * logo["width"] / mark.width)), Image.LANCZOS)
 
     inset = tpl.get("inset")
     if photo and inset:  # 실제 사진: 글자 반대쪽 위, 흰 테두리 + 그림자 + 살짝 기울임
-        x, y, w, h = _mirror(inset["box"], side)  # 틀의 사진 칸은 '글자 왼쪽' 기준이라 이미 반대편에 있다
+        spot = rnd.choice(inset["boxes"]) if inset.get("boxes") else inset["box"]
+        x, y, w, h = _mirror(spot, side) if side != "center" else spot  # 사진 칸은 '글자 왼쪽' 기준 (오른쪽이면 뒤집음)
         if mark:  # 채널 마크를 가리지 않게 마크 아래로
             lx, ly = logo["pos"]
             if x < lx + mark.width and lx < x + w and y < ly + mark.height and ly < y + h:
@@ -158,12 +171,14 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
         framed = Image.new("RGBA", (w + 2 * b, h + 2 * b), inset.get("border_color", "#FFFFFF"))
         framed.paste(pic, (b, b))
         framed = framed.rotate(rnd.uniform(-1, 1) * inset.get("tilt", 0), expand=True, resample=Image.BICUBIC)
-        shadow = Image.new("RGBA", framed.size, (0, 0, 0, 0))
-        shadow.paste((0, 0, 0, 150), mask=framed.split()[3])
-        canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(10)), (x - b + 10, y - b + 12))
+        if inset.get("shadow", True):
+            shadow = Image.new("RGBA", framed.size, (0, 0, 0, 0))
+            shadow.paste((0, 0, 0, 150), mask=framed.split()[3])
+            canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(10)), (x - b + 10, y - b + 12))
         canvas.alpha_composite(framed, (x - b, y - b))
 
-    box = _mirror([round(v * (1 + rnd.uniform(-jit, jit))) if i < 2 else v for i, v in enumerate(t["box"])], side)
+    box = [round(v * (1 + rnd.uniform(-jit, jit))) if i < 2 else v for i, v in enumerate(t["box"])]
+    box = _mirror(box, side) if side != "center" else box
     stroke = t["stroke"]
     font = None
     while lines:  # 안 들어가면 가장 긴 줄을 가운데 가까운 띄어쓰기에서 나눠 다시 (/ 없이 쓴 긴 문구)
@@ -175,22 +190,39 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
             spaces = [i for i, ch in enumerate(lines[longest]) if ch == " "]
             if len(lines) >= t["max_lines"] or not spaces:
                 raise
-            cut = min(spaces, key=lambda i: abs(i - len(lines[longest]) / 2))
-            lines[longest:longest + 1] = [lines[longest][:cut].strip(), lines[longest][cut:].strip()]
+            lines[longest:longest + 1] = _split(lines[longest])
+    while font and len(lines) < t["max_lines"]:  # 두 줄로 나누면 글자가 꽤 커지면 나눈다 (큰 글씨 두 줄이 기본인 채널)
+        longest = max(range(len(lines)), key=lambda i: len(lines[i]))
+        if " " not in lines[longest]:
+            break
+        trial = lines[:longest] + _split(lines[longest]) + lines[longest + 1:]
+        try:
+            bigger = _fit(trial, font_file, box, t, stroke)
+        except ValueError:
+            break
+        if bigger.size < font.size * 1.15:
+            break
+        lines, font = trial, bigger
     draw = ImageDraw.Draw(canvas)
     step = font.size * (1 + t["line_gap"]) if font else 0
     total = step * len(lines)
     y = box[1] + {"top": 0, "bottom": box[3] - total}.get(t["valign"], (box[3] - total) / 2)
-    accents = plan.get("accents") or lines[-1:]
-    for line in lines:
+    fills = style.get("line_fills")  # 줄마다 색 (예: 첫 줄 흰색, 둘째 줄 노랑). 있으면 강조는 Claude가 고른 말만
+    accents = plan.get("accents") or ([] if fills else lines[-1:])
+    for n, line in enumerate(lines):
         width = font.getbbox(line, stroke_width=stroke)[2]
-        x = box[0] if side == "left" else box[0] + box[2] - width
+        x = {"left": box[0], "center": box[0] + (box[2] - width) / 2}.get(side, box[0] + box[2] - width)
+        base_fill = fills[min(n, len(fills) - 1)] if fills else style["fill"]
         for seg, accent in _segments(line, accents):
             draw.text((x + 6, y + 8), seg, font=font, fill=(0, 0, 0, 140), stroke_width=stroke, stroke_fill=(0, 0, 0, 140))
-            draw.text((x, y), seg, font=font, fill=style["accent"] if accent else style["fill"],
+            draw.text((x, y), seg, font=font, fill=style["accent"] if accent else base_fill,
                       stroke_width=stroke, stroke_fill=style["stroke"])
             x += font.getlength(seg)
         y += step
+
+    border = tpl.get("border")
+    if border and border.get("width"):  # 바깥 테두리 (채널 마크는 그 위에)
+        ImageDraw.Draw(canvas).rectangle((0, 0, SIZE[0] - 1, SIZE[1] - 1), outline=border["color"], width=border["width"])
 
     if mark:  # 채널 마크: 늘 같은 파일·같은 자리·같은 크기, 맨 위에
         canvas.alpha_composite(mark, tuple(logo["pos"]))

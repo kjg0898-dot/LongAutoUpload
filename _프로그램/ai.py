@@ -70,18 +70,20 @@ def _schema(props, required=None):
     return {"type": "object", "properties": props, "required": required or list(props), "additionalProperties": False}
 
 
-def plan(cl, base, text, title, desc, sides):
-    """글자를 둘 쪽, 다른 색으로 강조할 말, 실제 사진 검색어."""
+def plan(cl, base, text, title, desc, sides, spots=()):
+    """글자를 둘 쪽, 다른 색으로 강조할 말, 실제 사진 검색어, (자리가 여럿이면) 실제 사진을 놓을 자리."""
+    spot_text = ("\n4) spot: 실제 사진을 놓을 자리 번호. 배경 속 사람 얼굴이나 핵심 대상을 가리지 않는 곳으로. 자리(1280x720 기준 x,y,너비,높이): "
+                 + ", ".join(f"{i}번 {s}" for i, s in enumerate(spots))) if len(spots) > 1 else ""
     content = [image_block(base), {"type": "text", "text": (
         "유튜브 썸네일을 만듭니다. 첨부한 사진이 배경이고, 그 위에 아래 문구를 크게 넣습니다.\n"
         f"문구 (/ 는 줄바꿈): {text}\n영상 제목: {title}\n영상 설명: {desc[:600]}\n\n"
         f"1) side: 문구를 둘 쪽 ({' 또는 '.join(sides)}). 사진 속 사람 얼굴이나 핵심 대상을 가리지 않는 쪽.\n"
         "2) accents: 문구에서 다른 색으로 강조할 핵심 말 1~2개. 문구에 있는 글자 그대로 (띄어쓰기 포함).\n"
         "3) queries: 위키미디어 공용(Wikimedia Commons)에서 이 영상 주제의 실제 사진·기록·지도·유물을 찾을 영어 검색어 3개. "
-        "구체적인 인물·사건·장소·물건 이름으로.")}]
-    out = ask(cl, content, _schema({"side": {"type": "string", "enum": list(sides)},
-                                    "accents": {"type": "array", "items": {"type": "string"}},
-                                    "queries": {"type": "array", "items": {"type": "string"}}}))
+        "구체적인 인물·사건·장소·물건 이름으로, 각각 2~4단어로 짧게." + spot_text)}]
+    props = {"side": {"type": "string", "enum": list(sides)}, "accents": {"type": "array", "items": {"type": "string"}},
+             "queries": {"type": "array", "items": {"type": "string"}}}
+    out = ask(cl, content, _schema(props | ({"spot": {"type": "integer"}} if spot_text else {})))
     out["accents"] = [a for a in out.get("accents", []) if a.strip() and a.strip() in text]  # 문구에 없는 말은 버림
     return out
 
@@ -91,7 +93,8 @@ def queries(cl, title, desc, text):
     out = ask(cl, [{"type": "text", "text": (
         f"유튜브 영상의 썸네일에 넣을 실제 사진을 위키미디어 공용(Wikimedia Commons)에서 찾습니다.\n"
         f"영상 제목: {title}\n썸네일 문구: {text}\n영상 설명: {desc[:600]}\n\n"
-        "이 주제의 실제 사진·기록·지도·유물·그림을 찾을 영어 검색어 3개를 주세요. 구체적인 인물·사건·장소·물건 이름으로.")}],
+        "이 주제의 실제 사진·기록·지도·유물·그림을 찾을 영어 검색어 3개를 주세요. 구체적인 인물·사건·장소·물건 이름으로, "
+        "각각 2~4단어로 짧게 (길면 검색 결과가 없음). 예: 'Gulf War soldiers', 'MRE ration', 'Battle of Fontenoy'.")}],
         _schema({"queries": {"type": "array", "items": {"type": "string"}}}))
     return out.get("queries", [])[:3]
 

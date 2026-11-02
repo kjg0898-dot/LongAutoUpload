@@ -47,13 +47,10 @@ def load_template(ch):
 
 
 def font_path(ch, tpl):
-    if tpl.get("font"):
-        p = template_dir(ch) / tpl["font"]
-        if not p.exists():
-            raise FileNotFoundError(f"[{ch['name']}] 틀의 폰트 파일이 없습니다: {p}")
-        return p
+    """글씨체: 내가 틀 폴더에 넣은 폰트 → 틀이 정한 폰트(프로그램과 함께 오는 무료 폰트 등) → 맑은 고딕 굵게."""
     own = sorted(p for p in template_dir(ch).glob("*") if p.suffix.lower() in (".ttf", ".otf", ".ttc"))
-    for p in own + (WINDOWS_FONTS if sys.platform == "win32" else OTHER_FONTS):
+    given = [template_dir(ch) / tpl["font"]] if tpl.get("font") else []
+    for p in own + given + (WINDOWS_FONTS if sys.platform == "win32" else OTHER_FONTS):
         if p.exists():
             return p
     raise FileNotFoundError("한글 폰트를 못 찾았습니다. 썸네일틀/<채널 폴더>/ 에 폰트 파일(.ttf/.otf)을 넣어주세요.")
@@ -160,7 +157,8 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
 
     inset = tpl.get("inset")
     if photo and inset:  # 실제 사진: 글자 반대쪽 위, 흰 테두리 + 그림자 + 살짝 기울임
-        spot = rnd.choice(inset["boxes"]) if inset.get("boxes") else inset["box"]
+        spots = inset.get("boxes") or [inset["box"]]
+        spot = spots[plan["spot"]] if isinstance(plan.get("spot"), int) and 0 <= plan["spot"] < len(spots) else rnd.choice(spots)
         x, y, w, h = _mirror(spot, side) if side != "center" else spot  # 사진 칸은 '글자 왼쪽' 기준 (오른쪽이면 뒤집음)
         if mark:  # 채널 마크를 가리지 않게 마크 아래로
             lx, ly = logo["pos"]
@@ -203,7 +201,9 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
         if bigger.size < font.size * 1.15:
             break
         lines, font = trial, bigger
-    draw = ImageDraw.Draw(canvas)
+    glow = t.get("glow", 0)
+    layer = Image.new("RGBA", SIZE, (0, 0, 0, 0)) if glow and lines else None
+    draw = ImageDraw.Draw(layer or canvas)
     step = font.size * (1 + t["line_gap"]) if font else 0
     total = step * len(lines)
     y = box[1] + {"top": 0, "bottom": box[3] - total}.get(t["valign"], (box[3] - total) / 2)
@@ -214,7 +214,21 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
         x = {"left": box[0], "center": box[0] + (box[2] - width) / 2}.get(side, box[0] + box[2] - width)
         base_fill = fills[min(n, len(fills) - 1)] if fills else style["fill"]
         for seg, accent in _segments(line, accents):
-            draw.text((x + 6, y + 8), seg, font=font, fill=(0, 0, 0, 140), stroke_width=stroke, stroke_fill=(0, 0, 0, 140))
+            if layer:  # 번짐용: 굵은 검은 글자를 따로 그려 흐리게
+                draw.text((x, y + 4), seg, font=font, fill=(0, 0, 0, 230), stroke_width=stroke + glow // 2, stroke_fill=(0, 0, 0, 230))
+            else:
+                draw.text((x + 6, y + 8), seg, font=font, fill=(0, 0, 0, 140), stroke_width=stroke, stroke_fill=(0, 0, 0, 140))
+            x += font.getlength(seg)
+        y += step
+    if layer:
+        canvas.alpha_composite(layer.filter(ImageFilter.GaussianBlur(glow)))
+    draw = ImageDraw.Draw(canvas)
+    y = box[1] + {"top": 0, "bottom": box[3] - total}.get(t["valign"], (box[3] - total) / 2)
+    for n, line in enumerate(lines):
+        width = font.getbbox(line, stroke_width=stroke)[2]
+        x = {"left": box[0], "center": box[0] + (box[2] - width) / 2}.get(side, box[0] + box[2] - width)
+        base_fill = fills[min(n, len(fills) - 1)] if fills else style["fill"]
+        for seg, accent in _segments(line, accents):
             draw.text((x, y), seg, font=font, fill=style["accent"] if accent else base_fill,
                       stroke_width=stroke, stroke_fill=style["stroke"])
             x += font.getlength(seg)
@@ -294,7 +308,7 @@ def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=
     plan = {}
     if key or os.environ.get("ANTHROPIC_API_KEY"):
         import ai
-        plan = ai.plan(ai.client(key), base, text, title, desc, tpl["text"]["sides"])
+        plan = ai.plan(ai.client(key), base, text, title, desc, tpl["text"]["sides"], (tpl.get("inset") or {}).get("boxes", ()))
     save(compose(ch, base, text, plan, photo, rnd), path)
     note.write_text(json.dumps({"sig": sig, "plan": plan}, ensure_ascii=False, indent=1), "utf-8")
     return path

@@ -442,40 +442,56 @@ class App:
             self.drop_hint.config(text="")
 
     def handle_drop(self, paths):
+        """끌어다 놓은 파일·폴더를 채널·순번별로 알아서 나눠 넣는다 (SEO 폴더·썸네일 폴더째 놓아도 됨)."""
         if self.busy:
             return messagebox.showinfo("잠시만요", "작업이 끝난 뒤에 넣어주세요.")
-        files = []
-        for p in map(Path, paths):  # 폴더를 놓으면 안의 파일 전부
-            files += sorted(f for f in p.rglob("*") if f.is_file()) if p.is_dir() else [p]
-        memos = [f for f in files if f.suffix.lower() == ".txt"]
-        pics = [f for f in files if f.suffix.lower() in core.IMAGE_EXT]
-        if not memos and not pics:
-            return messagebox.showinfo("넣기", "SEO 메모장(.txt)이나 사진(.jpg·.png)을 놓아주세요."
-                                       + ("\n영상은 Studio에 올리면 됩니다." if any(f.suffix.lower() in core.VIDEO_EXT for f in files) else ""))
         cfg = core.load_config()
-        if not cfg["channels"]:
-            return messagebox.showinfo("넣기", "설정에서 채널을 먼저 추가해주세요.")
-        ch = self.pick_channel(f"메모장 {len(memos)}개 · 사진 {len(pics)}개 — 어느 채널 것인가요?", cfg["channels"])
-        if not ch:
-            return
-        if memos:
-            self.import_seo(memos, ch)
-        if pics and not ch["thumb_auto"]:
-            self.add_thumbs(pics, ch)
-        elif pics:  # 썸네일 자동 만들기 채널: 이름(또는 폴더)의 번호대로 그 영상의 후보 그림으로
+        r = self.steps.route(paths, cfg["channels"])
+        if not (r["seo"] or r["pics"] or r["unknown_seo"] or r["unknown_pics"]):
+            files = [f for p in map(Path, paths) for f in ([p] if p.is_file() else p.rglob("*"))]
+            return messagebox.showinfo("넣기", "SEO 메모장(.txt)이나 그림(.jpg·.png)을 놓아주세요."
+                                       + ("\n영상은 Studio에 올리면 됩니다." if any(f.suffix.lower() in core.VIDEO_EXT for f in files) else ""))
+        names = sorted({self.steps.guess_channel_name(f) for f in r["unknown_seo"]} - {""})
+        if names and messagebox.askyesno("새 채널", f"설정에 없는 채널의 SEO가 {len(names)}개 있어요:\n" + ", ".join(names)
+                                         + "\n\n이름만 먼저 추가할까요? (로그인·공개 시간은 나중에 설정에서)"):
+            for name in names:
+                if name not in {c["name"] for c in cfg["channels"]}:
+                    cfg["channels"].append(core.new_channel(name) | {"thumb_auto": True, "_new": True})
+            core.save_config(cfg)
+            self.log(f"새 채널을 추가했습니다: {', '.join(names)} — 설정에서 채널마다 로그인해 주세요.")
+            r = self.steps.route(paths, cfg["channels"])
+        leftovers = r["unknown_seo"]
+        if leftovers and cfg["channels"]:  # 이름으로 모르는 메모장은 물어서
+            ch = self.pick_channel(f"메모장 {len(leftovers)}개 — 어느 채널 것인가요?", cfg["channels"])
+            if ch:
+                r["seo"].setdefault(ch["name"], []).extend(leftovers)
+        chans = {c["name"]: c for c in cfg["channels"]}
+        for name, memos in r["seo"].items():
+            self.import_seo(memos, chans[name], open_prep=False)
+        off = [n for n in r["pics"] if not chans[n]["thumb_auto"]]
+        if off and messagebox.askyesno("썸네일 자동 만들기", "이 채널은 '썸네일 자동 만들기'가 꺼져 있어요:\n" + ", ".join(off)
+                                       + "\n\n넣은 그림으로 썸네일을 만들도록 켤까요? ('아니요'면 완성 썸네일로 넣음)"):
+            for n in off:
+                chans[n]["thumb_auto"] = True
+            core.save_config(cfg)
+        for name, by_num in r["pics"].items():
+            ch = chans[name]
+            if not ch["thumb_auto"]:
+                self.add_thumbs([f for fs in by_num.values() for f in fs], ch)
+                continue
             dirs = core.channel_dirs(ch)
-            if not dirs:
-                return messagebox.showinfo("넣기", "먼저 이 채널의 SEO를 넣어주세요.")
-            unknown = [f.name for f in pics if self.steps.drop_number(f) is None]
-            for num in {self.steps.drop_number(f) for f in pics} - {None}:
-                self.steps.add_candidates(dirs[-1], num, [f for f in pics if self.steps.drop_number(f) == num])
-            self.log(f"[{ch['name']}] 후보 그림 {len(pics) - len(unknown)}개를 번호대로 넣었습니다.")
+            folder = dirs[-1] if dirs else core.seo_folder(ch)
+            for num, fs in by_num.items():
+                self.steps.add_candidates(folder, num, fs)
+            self.log(f"[{name}] 후보 그림 {sum(len(v) for v in by_num.values())}장을 {len(by_num)}개 영상에 나눠 넣었습니다.")
+        self.refresh_status()
+        if r["seo"] or r["pics"]:
             self.open_prep(again=True)
-            if unknown:
-                messagebox.showinfo("넣기", "이름에 번호가 없어 어느 영상 것인지 모르는 그림이 있어요.\n"
-                                    "준비 화면의 영상 칸 위에 끌어다 놓아주세요:\n" + "\n".join(unknown[:20]))
+        if r["unknown_pics"]:
+            messagebox.showinfo("넣기", "어느 채널·몇 번 영상 것인지 모르는 그림이 있어요 (이름에 채널·번호가 없음).\n"
+                                "준비 화면의 영상 칸 위에 끌어다 놓아주세요:\n" + "\n".join(f.name for f in r["unknown_pics"][:20]))
 
-    def import_seo(self, paths=None, ch=None):
+    def import_seo(self, paths=None, ch=None, open_prep=True):
         cfg = core.load_config()
         if not cfg["channels"]:
             return messagebox.showinfo("SEO 넣기", "설정에서 채널을 먼저 추가해주세요.")
@@ -491,7 +507,8 @@ class App:
         self.log(f"[{ch['name']}] SEO를 넣었습니다: 영상/{core.rel(folder)}\n"
                  "준비 화면에서 영상마다 후보 그림을 넣고 골라 제목·썸네일 문구를 고치세요. 영상은 Studio에 올리면 됩니다.")
         self.refresh_status()
-        self.open_prep(again=True)
+        if open_prep:
+            self.open_prep(again=True)
 
     def _working_channel(self, title):
         cfg = core.load_config()
@@ -801,6 +818,8 @@ class PrepWindow:
         c["photo_note"].pack(anchor="w")
         c["err"] = ttk.Label(side, foreground=COLORS["accent"], wraplength=self.FINAL)
         c["err"].pack(anchor="w")
+        c["score"] = ttk.Label(side, justify="left", wraplength=self.FINAL)
+        c["score"].pack(anchor="w")
         for j, (key, label, values) in enumerate((("제목", "제목", item["titles"]),
                                                    ("썸네일문구", "썸네일 문구", item["thumb_texts"])), 1):
             ttk.Label(box, text=label, foreground=COLORS["muted"]).grid(row=j, column=0, sticky="w", padx=(0, 6))
@@ -878,6 +897,16 @@ class PrepWindow:
             self.images.append(img)
         c["final"].config(image=img or "", text="" if img else "최종 썸네일 아직 없음",
                           width=0 if img else 40, height=0 if img else 9)
+        import thumbs
+        checks, points, review = thumbs.report(final) if final else ([], None, None)
+        lines = []
+        if review:
+            lines.append(f"Claude 점수 {review.get('total', 0)}/100" if review.get("policy_ok", True)
+                         else f"⛔ 정책 위험: {review.get('policy_reason', '')}")
+            lines += [f"· {tip}" for tip in review.get("tips", [])]
+        if points is not None:
+            lines.append(f"자동 점검 {points}/100" + "".join(f"\n⚠ {m}" for ok, m in checks if not ok))
+        c["score"].config(text="\n".join(lines), foreground=COLORS["accent"] if review and not review.get("policy_ok", True) else "")
 
     def refresh(self, c):
         _, items = self.app.steps.prep_items(c["ch"])
@@ -1438,9 +1467,9 @@ class Settings:
         """처음 로그인한 채널: 이름·폴더·공개 시간을 채우고, 새로 추가한 채널이면 두 가지만 물어본 뒤 저장."""
         v, placeholder = self.vars, r"채널\d+"
         name = re.sub(r'[\\/:*?"<>|]', "", ch["channel_title"]).strip()
-        is_new = bool(re.fullmatch(placeholder, v["name"].get()))
-        if name and is_new and name not in (c["name"] for c in self.cfg["channels"]):
-            v["name"].set(name)
+        is_new = bool(re.fullmatch(placeholder, v["name"].get())) or bool(ch.pop("_new", False))
+        if name and re.fullmatch(placeholder, v["name"].get()) and name not in (c["name"] for c in self.cfg["channels"]):
+            v["name"].set(name)  # SEO 이름으로 먼저 추가한 채널은 이름 그대로 (SEO 파일 이름과 짝이 맞게)
         if name and re.fullmatch(placeholder, v["folder"].get()):
             v["folder"].set(v["name"].get())
         if slots and is_new:

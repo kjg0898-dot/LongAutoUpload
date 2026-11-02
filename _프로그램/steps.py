@@ -1,4 +1,5 @@
 """버튼 하나 = 단계 하나. ui는 log(글), ask(질문)->bool, alert(경고), notify(끝났을 때 알림)을 가진 객체."""
+import json
 import math
 import os
 import re
@@ -456,6 +457,71 @@ def drop_number(path):
     p = Path(path)
     m = re.fullmatch(r"\s*(\d{1,3})\s*번?\s*", p.parent.name) or re.match(r"\s*(\d{1,3})(?:번|[\s_\-.)]|$)", p.stem)
     return int(m[1]) if m else None
+
+
+def _name_key(name):
+    """채널을 알아보려고 이름을 고른다: 띄어쓰기·기호와 'seo'·'썸네일' 같은 말을 뺀다."""
+    key = re.sub(r"[\s_\-.()\[\]]+", "", str(name)).lower()
+    return re.sub(r"(seo|썸네일|thumbnails?|thumb|메모장|파일)+$", "", key)
+
+
+def channel_of(name, channels):
+    """이름(파일·폴더)에서 채널: 채널 이름·영상 폴더 이름·YouTube 채널 이름과 같으면, 아니면 한쪽이 다른 쪽을 품으면."""
+    key = _name_key(name)
+    if not key:
+        return None
+    for exact in (True, False):
+        for ch in channels:
+            for cand in (ch["name"], ch["folder"], ch.get("channel_title", "")):
+                c = _name_key(cand)
+                if c and (c == key if exact else len(c) >= 2 and (c in key or key in c)):
+                    return ch
+    return None
+
+
+def route(paths, channels):
+    """폴더째 끌어다 놓은 것 나누기: {'seo': {채널: [메모장]}, 'pics': {채널: {순번: [그림]}}, 'unknown_seo': [...], 'unknown_pics': [...]}.
+    메모장은 파일 이름(채널seo.txt) 또는 폴더 이름으로, 그림은 manifest.json → 이름(채널_번호_a.png) → 번호 폴더 순으로 채널·순번을 찾는다."""
+    files = []
+    for p in map(Path, paths):
+        files += sorted(f for f in p.rglob("*") if f.is_file()) if p.is_dir() else [p]
+    manifest = {}
+    for m in (f for f in files if f.name.lower() == "manifest.json"):
+        try:
+            data = json.loads(core.read_text(m))
+        except ValueError:
+            continue
+        for seq, e in (data.get("entries") or {}).items():
+            for name in e.get("files", []):
+                manifest[name] = (data.get("channel", ""), int(e.get("seq") or seq))
+    out = {"seo": {}, "pics": {}, "unknown_seo": [], "unknown_pics": []}
+    by_name = {ch["name"]: ch for ch in channels}
+    for f in files:
+        if f.suffix.lower() == ".txt":
+            if core.SKIP_TXT.search(f.name):
+                continue
+            ch = channel_of(f.stem, channels) or channel_of(f.parent.name, channels)
+            (out["seo"].setdefault(ch["name"], []) if ch else out["unknown_seo"]).append(f)
+        elif f.suffix.lower() in core.IMAGE_EXT:
+            ch, num = None, None
+            if f.name in manifest:
+                ch, num = channel_of(manifest[f.name][0], channels), manifest[f.name][1]
+            if not ch and (m := re.match(r"^(.*?)[\s_\-]+(\d{1,3})(?:[\s_\-.].*)?$", f.stem)):
+                ch, num = channel_of(m[1], channels), int(m[2])
+            if not ch:
+                ch = next((c for c in (channel_of(d.name, channels) for d in list(f.parents)[:3]) if c), None)
+                num = num if num is not None else drop_number(f)
+            if ch and num is not None:
+                out["pics"].setdefault(ch["name"], {}).setdefault(num, []).append(f)
+            else:
+                out["unknown_pics"].append(f)
+    out["channels"] = by_name
+    return out
+
+
+def guess_channel_name(path):
+    """설정에 없는 채널의 SEO 메모장 이름에서 채널 이름 짐작 (예: 한국사인물관seo.txt → 한국사인물관)."""
+    return re.sub(r"[\s_\-]*(seo|SEO|썸네일)$", "", Path(path).stem).strip()
 
 
 def add_candidates(folder, num, paths):

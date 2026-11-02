@@ -737,6 +737,33 @@ def test_channel_template_wwh():
         assert sum(abs(a - b) for a, b in zip(got, want)) < 30, (got, want)  # 마크 그대로
         assert img.getpixel((1000, 150))[0] > 150  # 위쪽 실제 사진(빨강)
         assert img.getpixel((640, 360)) != img.getpixel((640, 690))  # 아래쪽 글자·그늘
+        checks, points = thumbs.check(img)  # 코드로 재는 점검: 글자 높이·단어 수·대비·밝기·가림 자리
+        assert len(checks) == 7 and 0 <= points <= 100, checks
+        assert any("대비" in m for _, m in checks) and thumbs.contrast("#FFFFFF", "#000000") == 21
+        assert thumbs.contrast("#FFEB00", "#000000") > 4.5
+
+
+def test_route_folders():
+    """폴더째 넣기: SEO는 '채널seo.txt', 그림은 manifest.json → '채널_번호_a.png' → 번호 폴더로 채널·순번을 찾는다."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "seo").mkdir()
+        (root / "그림" / "숨겨진동양사" / "4").mkdir(parents=True)
+        for name in ("세계전쟁사seo.txt", "숨겨진동양사이야기seo.txt", "한국사인물관 SEO.txt", "세계전쟁사 대본.txt"):
+            (root / "seo" / name).write_text("x", "utf-8")
+        for name in ("세계전쟁사_1_a.png", "세계전쟁사_12_b.jpg", "gen_abc.png", "숨겨진동양사/4/Gemini_7k2.png", "모름.png"):
+            (root / "그림" / name).write_bytes(b"i")
+        (root / "그림" / "manifest.json").write_text(json.dumps(
+            {"channel": "세계전쟁사", "entries": {"3": {"seq": 3, "files": ["gen_abc.png"]}}}), "utf-8")
+        chs = [core.new_channel("세계전쟁사"), core.new_channel("숨겨진동양사")]
+        r = steps.route([root / "seo", root / "그림"], chs)
+        assert {k: [f.name for f in v] for k, v in r["seo"].items()} == {
+            "세계전쟁사": ["세계전쟁사seo.txt"], "숨겨진동양사": ["숨겨진동양사이야기seo.txt"]}, r["seo"]  # 대본은 안 읽음
+        assert {k: sorted(v) for k, v in r["pics"].items()} == {"세계전쟁사": [1, 3, 12], "숨겨진동양사": [4]}, r["pics"]
+        assert [f.name for f in r["unknown_seo"]] == ["한국사인물관 SEO.txt"]
+        assert steps.guess_channel_name(r["unknown_seo"][0]) == "한국사인물관"
+        assert [f.name for f in r["unknown_pics"]] == ["모름.png"]
+        assert steps.channel_of("숨겨진중국역사seo", chs) is None  # 비슷하지만 다른 채널은 안 붙임
 
 
 def test_publish_times():

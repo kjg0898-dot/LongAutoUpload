@@ -99,6 +99,36 @@ def queries(cl, title, desc, text):
     return out.get("queries", [])[:3]
 
 
+RUBRIC = (("legibility", "작은 화면(168x94)에서도 글자가 읽히는가", 20),
+          ("focus", "눈에 띄는 주인공 하나, 단순한 구성", 15),
+          ("accuracy", "썸네일이 영상 제목·내용과 맞고 과장·거짓이 없는가", 15),
+          ("channel", "예시로 준 채널 썸네일들과 같은 채널처럼 보이는가", 15),
+          ("text", "글자 수가 적당한가 (짧을수록 좋음)", 10),
+          ("contrast", "글자 대비와 전체 밝기", 10),
+          ("overlay", "오른쪽 아래 영상 길이·맨 아래 진행 막대에 중요한 게 가리지 않는가", 10),
+          ("distinct", "제목을 되풀이하지 않고 새 궁금증을 더하는가", 5))
+
+
+def score(cl, img, title, text, desc, examples=(), checks=()):
+    """완성 썸네일 종합 점수. 먼저 정책(잔인·시신·선정·극단주의 상징·욕설·거짓 약속) 통과 여부, 그다음 항목별 점수와 고칠 점."""
+    content = [{"type": "text", "text": "평가할 썸네일:"}, image_block(img, 1024)]
+    for i, p in enumerate(examples):
+        content += [{"type": "text", "text": f"채널 예시 썸네일 {i + 1}:"}, image_block(p, 512)]
+    content.append({"type": "text", "text": (
+        f"유튜브 역사·전쟁사 채널의 썸네일을 평가합니다.\n영상 제목: {title}\n썸네일 문구: {text}\n영상 설명: {desc[:500]}\n"
+        "프로그램이 잰 값: " + "; ".join(m for _, m in checks) + "\n\n"
+        "1) policy_ok: YouTube 정책상 문제가 없는가 (피·상처·시신이 드러남, 극단주의 상징이 중심, 선정성, 욕설, 영상에 없는 약속이면 false). "
+        "policy_reason: false면 이유.\n"
+        "2) 항목별 점수 (0~배점): " + ", ".join(f"{k} = {d} (0~{w})" for k, d, w in RUBRIC) + "\n"
+        "3) tips: 고치면 좋은 점 1~3개, 짧은 한국어로. 이미 좋으면 빈 목록.")})
+    props = {"policy_ok": {"type": "boolean"}, "policy_reason": {"type": "string"},
+             "tips": {"type": "array", "items": {"type": "string"}}}
+    props |= {k: {"type": "integer"} for k, _, _ in RUBRIC}
+    out = ask(cl, content, _schema(props))
+    out["total"] = sum(max(0, min(w, int(out.get(k, 0)))) for k, _, w in RUBRIC) if out.get("policy_ok", True) else 0
+    return out
+
+
 def search_commons(query, limit=6):
     """위키미디어 공용에서 저작권이 풀린(퍼블릭 도메인·CC0) 사진만. [{'title', 'url'}]"""
     # 썸네일은 위키미디어 표준 크기(960)로 받는다: 다른 크기는 서버가 막을 수 있음 (https://w.wiki/GHai)

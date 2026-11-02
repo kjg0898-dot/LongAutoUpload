@@ -228,10 +228,12 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
         canvas.alpha_composite(layer.filter(ImageFilter.GaussianBlur(glow)))
     draw = ImageDraw.Draw(canvas)
     y = box[1] + {"top": 0, "bottom": box[3] - total}.get(t["valign"], (box[3] - total) / 2)
+    boxes = []
     for n, line in enumerate(lines):
         width = font.getbbox(line, stroke_width=stroke)[2]
         x = {"left": box[0], "center": box[0] + (box[2] - width) / 2}.get(side, box[0] + box[2] - width)
         base_fill = fills[min(n, len(fills) - 1)] if fills else style["fill"]
+        boxes.append(draw.textbbox((x, y), line, font=font, stroke_width=stroke))
         for seg, accent in _segments(line, accents):
             draw.text((x, y), seg, font=font, fill=style["accent"] if accent else base_fill,
                       stroke_width=stroke, stroke_fill=style["stroke"])
@@ -244,7 +246,57 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None):
 
     if mark:  # 채널 마크: 늘 같은 파일·같은 자리·같은 크기, 맨 위에
         canvas.alpha_composite(mark, tuple(logo["pos"]))
-    return canvas.convert("RGB")
+    out = canvas.convert("RGB")
+    out.info["layout"] = {"lines": lines, "boxes": boxes, "font": font_file.name, "side": side,
+                          "glyph": (lambda b: b[3] - b[1])(font.getbbox("가")) if font else 0,
+                          "colors": [style.get("accent"), *(fills or [style.get("fill")])], "stroke": style.get("stroke")}
+    return out
+
+
+# ---------- 점검: YouTube 공식 도움말·대규모 조사에서 코드로 잴 수 있는 것 ----------
+BADGE = (1280 - 430, 720 - 170, 1280, 720)  # 오른쪽 아래 영상 길이 표시 (1시간 넘는 영상, 168px 화면 기준을 키운 값)
+PROGRESS = (0, 720 - 50, 1280, 720)  # 다시 볼 때 아래쪽 진행 막대
+
+
+def _luma(color):
+    r, g, b = (int(color[i:i + 2], 16) / 255 for i in (1, 3, 5)) if isinstance(color, str) else (c / 255 for c in color[:3])
+    lin = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in (r, g, b)]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+
+def contrast(a, b):
+    """WCAG 대비 (1~21). 큰 글자는 4.5 이상이면 넉넉."""
+    hi, lo = sorted((_luma(a), _luma(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def check(img):
+    """[(좋음?, 설명)], 점수(0~100). 근거: YouTube 도움말(작은 화면에서 읽히게, 정확하게), vidIQ·1of10 조사(글자 적게, 밝게)."""
+    lay, out, score = img.info.get("layout", {}), [], 100
+
+    def add(ok, good, bad, cost):
+        nonlocal score
+        out.append((ok, good if ok else bad))
+        score -= 0 if ok else cost
+    lines, boxes = lay.get("lines", []), lay.get("boxes", [])
+    if lines:
+        g = lay.get("glyph", 0)
+        add(g >= 90, f"글자 높이 {g}px — 작은 화면(168px)에서도 읽힘", f"글자 높이 {g}px — 작은 화면에서 안 읽힐 수 있음 (90px 이상 권장)", 25)
+        words = sum(len(x.split()) for x in lines)
+        add(words <= 6, f"문구 {words}단어", f"문구 {words}단어 — 많음 (잘 되는 썸네일은 대부분 5단어 이하)", 10)
+        area = sum((b[2] - b[0]) * (b[3] - b[1]) for b in boxes) / (1280 * 720)
+        add(area <= 0.3, f"글자가 화면의 {area:.0%}", f"글자가 화면의 {area:.0%} — 그림이 잘 안 보일 수 있음", 5)
+        cmin = min((contrast(c, lay["stroke"]) for c in lay.get("colors", []) if c), default=21)
+        add(cmin >= 4.5, f"글자·외곽선 대비 {cmin:.1f}:1", f"글자·외곽선 대비 {cmin:.1f}:1 — 낮음 (4.5:1 이상)", 10)
+
+        def hits(zone):
+            return any(b[0] < zone[2] and zone[0] < b[2] and b[1] < zone[3] and zone[1] < b[3] for b in boxes)
+        add(not hits(BADGE), "오른쪽 아래 영상 길이 표시 자리 비어 있음",
+            "글자 끝이 오른쪽 아래 영상 길이 표시에 가려질 수 있음 (작은 화면)", 10)
+        add(not hits(PROGRESS), "맨 아래 진행 막대 자리 비어 있음", "글자가 맨 아래 진행 막대 자리(50px)에 걸침", 5)
+    luma = sum(img.convert("L").resize((64, 36)).getdata()) / (64 * 36)
+    add(luma >= 90, f"밝기 {luma:.0f}/255", f"밝기 {luma:.0f}/255 — 어두운 편 (어두운 썸네일이 덜 눌린다는 조사)", 10)
+    return out, max(score, 0)
 
 
 def save(img, path):
@@ -309,13 +361,35 @@ def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=
     sig = {"text": text, "base": base.name, "size": base.stat().st_size, "photo": photo.stat().st_size if photo else 0}
     if not force and path.exists() and note.exists() and json.loads(note.read_text("utf-8")).get("sig") == sig:
         return path
-    plan = {}
-    if key or os.environ.get("ANTHROPIC_API_KEY"):
+    plan, review = {}, None
+    use_ai = bool(key or os.environ.get("ANTHROPIC_API_KEY"))
+    if use_ai:
         import ai
         plan = ai.plan(ai.client(key), base, text, title, desc, tpl["text"]["sides"], (tpl.get("inset") or {}).get("boxes", ()))
-    save(compose(ch, base, text, plan, photo, rnd), path)
-    note.write_text(json.dumps({"sig": sig, "plan": plan}, ensure_ascii=False, indent=1), "utf-8")
+    img = compose(ch, base, text, plan, photo, rnd)
+    checks, points = check(img)
+    if use_ai:
+        try:
+            review = ai.score(ai.client(key), img, title, text, desc, examples(ch), checks)
+        except Exception as e:
+            log(f"    (Claude 점수 실패: {e})")
+    save(img, path)
+    note.write_text(json.dumps({"sig": sig, "plan": plan, "check": checks, "check_score": points, "review": review},
+                               ensure_ascii=False, indent=1), "utf-8")
     return path
+
+
+def examples(ch, n=3):
+    """채널 예시 썸네일 (틀 폴더/예시/): Claude가 채널다운지 비교할 때."""
+    folder = template_dir(ch) / "예시"
+    return sorted(p for p in folder.glob("*") if p.suffix.lower() in core.IMAGE_EXT)[:n] if folder.exists() else []
+
+
+def report(path):
+    """최종 썸네일 옆 기록: (점검 [(좋음?, 설명)], 점검 점수, Claude 평가 또는 None)."""
+    note = Path(path).with_suffix(".json")
+    data = json.loads(note.read_text("utf-8")) if note.exists() else {}
+    return data.get("check", []), data.get("check_score"), data.get("review")
 
 
 def make(ch, row, key="", log=print, force=False, rnd=None):

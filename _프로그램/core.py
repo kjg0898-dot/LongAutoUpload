@@ -210,12 +210,23 @@ def parse_seo(text):
         thumb_texts = re.findall(r"^\s*\d+\.\s*(.+?)\s*$", find("썸네일 문구"), re.M)
         rec_t = re.search(r"추천\s*1순위:\s*(\d+)", find("썸네일 문구"))
         prompt = re.search(r"^\s*추천 프롬프트:\s*(.+)$", "\n".join(sections.values()), re.M)
-        out.append({"num": num, "orig": orig, "titles": titles, "title": titles[pick] if titles else orig,
+        out.append({"num": num, "orig": orig, "orig_thumb": original_thumb_text("\n".join(lines)), "titles": titles, "title": titles[pick] if titles else orig,
                     "desc": desc, "tags": "", "comment": find("고정"),  # 해시태그는 설명에만
                     "title_pick": pick, "thumb_texts": thumb_texts,
                     "thumb_pick": int(rec_t[1]) - 1 if rec_t and 0 < int(rec_t[1]) <= len(thumb_texts) else 0,
                     "thumb_prompt": prompt[1].strip() if prompt else ""})
     return out
+
+
+def original_thumb_text(block):
+    """'>> 원본 썸네일 텍스트: [가 / 나] — 설명' 에서 문구만 ([ ] 안, 없으면 설명 괄호·— 앞까지)."""
+    m = re.search(r"원본 썸네일 텍스트:\s*(.+)", block)
+    if not m:
+        return ""
+    s = m[1].strip()
+    if s.startswith("["):
+        return s[1:s.find("]")].strip() if "]" in s else s[1:].strip()
+    return re.split(r"\s+\(|\s+—|\s+-\s", s)[0].strip()
 
 
 SKIP_TXT = re.compile(r"대본|스크립트|script|자막|나레이션|내레이션|프롬프트|prompt|작업표", re.I)

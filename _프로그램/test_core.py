@@ -90,7 +90,7 @@ SEO = """============================================================
 
 def test_seo():
     a, b = core.parse_seo(SEO.replace("\n", "\r\n"))
-    assert a == {"num": 1, "orig": "원본 제목 하나", "titles": ["첫째 후보", "둘째 후보", "셋째 후보"],
+    assert a == {"num": 1, "orig": "원본 제목 하나", "orig_thumb": "", "titles": ["첫째 후보", "둘째 후보", "셋째 후보"],
                  "title": "둘째 후보", "desc": "설명 본문입니다.\n\n참고자료\n· 책\n\n#역사 #동양사",
                  "tags": "", "comment": "고마워요 ❤️\n둘째 줄",
                  "title_pick": 1, "thumb_texts": ["문구"], "thumb_pick": 0, "thumb_prompt": ""}, a

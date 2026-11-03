@@ -867,10 +867,11 @@ class PrepWindow:
         c["err"].pack(anchor="w")
         c["score"] = ttk.Label(side, justify="left", wraplength=self.FINAL)
         c["score"].pack(anchor="w")
-        for j, (key, label, values, pick) in enumerate((("제목", "제목", item["titles"], item.get("title_pick", 0)),
-                                                         ("썸네일문구", "썸네일 문구", item["thumb_texts"], item.get("thumb_pick", 0))), 1):
+        for j, (key, label, values, pick, orig) in enumerate((
+                ("제목", "제목", item["titles"], item.get("title_pick", 0), item["orig"]),
+                ("썸네일문구", "썸네일 문구", item["thumb_texts"], item.get("thumb_pick", 0), item.get("orig_thumb", ""))), 1):
             ttk.Label(box, text=label, foreground=COLORS["muted"]).grid(row=j, column=0, sticky="nw", padx=(0, 6), pady=(4, 0))
-            self.choices(box, c, key, values, pick).grid(row=j, column=1, sticky="w", pady=2)
+            self.choices(box, c, key, values, pick, orig).grid(row=j, column=1, sticky="w", pady=2)
         more = ttk.Frame(box)
         toggle = ttk.Button(box, text="설명·고정 댓글 ▸")
         toggle.grid(row=3, column=1, sticky="w", pady=(4, 0))
@@ -885,9 +886,13 @@ class PrepWindow:
         self.show_pics(c)
         self.show_final(c)
 
-    def choices(self, parent, c, key, values, pick):
-        """SEO의 후보(제목·썸네일 문구)를 한눈에 전부 보여주고 눌러서 고르기 + 직접 입력 칸. 고르면 바로 저장."""
+    def choices(self, parent, c, key, values, pick, orig=""):
+        """SEO의 후보(제목·썸네일 문구)와 원본을 한눈에 전부 보여주고 눌러서 고르기 + 직접 입력 칸. 고르면 바로 저장."""
         frame = ttk.Frame(parent)
+        labels = {}
+        if orig and orig not in values:  # 원본(예전 제목·썸네일 문구)도 고를 수 있게 맨 아래에
+            values = list(values) + [orig]
+            labels[len(values) - 1] = "   ← 원본"
         current = c["item"][key]
         var = c[key] = tk.StringVar(value=current)
         choice = tk.StringVar(value=str(values.index(current)) if current in values else "own")
@@ -905,7 +910,7 @@ class PrepWindow:
             row = ttk.Frame(frame)
             row.grid(row=n, column=0, sticky="w")
             ttk.Radiobutton(row, value=str(n), variable=choice, command=lambda v=v: pick_value(v)).pack(side="left", anchor="n")
-            text = v + count(v) + ("   ← SEO 추천" if n == pick else "")
+            text = v + count(v) + ("   ← SEO 추천" if n == pick else labels.get(n, ""))
             lab = ttk.Label(row, text=text, wraplength=width, justify="left", cursor="hand2")
             lab.pack(side="left", anchor="w")
             lab.bind("<Button-1>", lambda e, n=n, v=v: (choice.set(str(n)), pick_value(v)))

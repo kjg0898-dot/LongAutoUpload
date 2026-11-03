@@ -1018,6 +1018,7 @@ def test_thumb_test_report():
 
 
 SEO2 = "".join(f"""[2026-10-21 19:24] 행 {n} | 순번 {n} | 제목: 원본 {n}
+>> 원본 썸네일 텍스트: [예전 문구 {n} / 둘째 줄] — 그림 설명
 ---
 제목 (3안)
 1. 첫째 제목 {n}
@@ -1070,6 +1071,8 @@ def test_prep_flow():
         assert len(core.candidates(folder, 1)) == 2 and len(list((folder / core.MATERIAL / "1").iterdir())) == 3  # 화면엔 하나씩
         assert items[0]["제목"] == "첫째 제목 1" and items[0]["썸네일문구"] == "문구 1 / 둘째 줄"
         assert items[0]["그림요청"] == "장면 1, 텍스트 없음" and items[0]["고정댓글"] == "댓글 1"  # 그림 프롬프트 복사용
+        assert items[0]["orig"] == "원본 1" and items[0]["orig_thumb"] == "예전 문구 1 / 둘째 줄"  # 원본 제목·썸네일 문구도 보여줌
+        assert core.original_thumb_text(">> 원본 썸네일 텍스트: 노자 말씀 / 베풀지 않는다 (검은 배경)") == "노자 말씀 / 베풀지 않는다"
         steps.remember(folder, 1, 선택=core.rel(items[0]["후보"][1]).split("/", 2)[2], 제목="고른 제목", 썸네일문구="고친 / 문구")
         _, items = steps.prep_items(ch)
         assert items[0]["선택"].name == "1번 b.png" and items[0]["제목"] == "고른 제목"

@@ -589,6 +589,7 @@ def prep_items(ch):
         photo = folder / core.PHOTOS / f"{e['num']}.jpg"
         out.append({"num": e["num"], "orig": e["orig"], "titles": e["titles"], "thumb_texts": texts,
                     "title_pick": e.get("title_pick", 0), "thumb_pick": e.get("thumb_pick", 0),
+                    "orig_thumb": e.get("orig_thumb", ""),
                     "제목": p.get("제목") or e["title"],
                     "썸네일문구": p.get("썸네일문구") or (texts[e.get("thumb_pick", 0)] if texts else ""),
                     "설명": p.get("설명") or e["desc"], "고정댓글": p.get("고정댓글") or e["comment"],

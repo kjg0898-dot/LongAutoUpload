@@ -581,7 +581,8 @@ def prep_items(ch):
                     "설명": p.get("설명") or e["desc"], "고정댓글": p.get("고정댓글") or e["comment"],
                     "그림요청": e.get("thumb_prompt", ""),
                     "선택": core.material_for(folder, e["num"]), "후보": core.candidates(folder, e["num"]),
-                    "실제사진": photo if photo.exists() else None, "최종": final if final.exists() else None})
+                    "실제사진": photo if photo.exists() else None, "최종": final if final.exists() else None,
+                    "사진자리": p.get("사진자리"), "사진빼기": bool(p.get("사진빼기"))})
     return folder, out
 
 

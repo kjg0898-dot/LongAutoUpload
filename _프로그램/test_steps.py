@@ -834,6 +834,64 @@ def test_reply_comments():
     assert all(s in prompt for s in ("예전 답글", "고친 것", "짧게", "고정 댓글", "중장년", "링크"))
 
 
+def test_photo_position():
+    """실제 사진 자리: 추천(늘 같은 결과) → 준비 화면 미리보기 = 최종, 직접 옮긴 자리는 최종·다시 만들기에도 그대로,
+    사진만 옮기면 Claude에게 디자인을 다시 묻지 않고, 글자는 사진을 피한 자리로."""
+    import ai
+    import os
+    import random
+    import shutil as sh
+    import thumbs
+    from PIL import Image
+    with tempfile.TemporaryDirectory() as d:
+        thumbs.TEMPLATE_DIR = Path(d) / "틀"
+        sh.copytree(Path(__file__).parent / "썸네일틀" / "세계전쟁사", thumbs.TEMPLATE_DIR / "세계전쟁사")
+        ch = {**core.DEFAULT_CHANNEL, "name": "세계전쟁사", "folder": "세계전쟁사"}
+        folder = Path(d) / "채널"
+        (folder / core.MATERIAL / "1").mkdir(parents=True)
+        Image.new("RGB", (1600, 900), (40, 60, 80)).save(folder / core.MATERIAL / "1" / "a.png")
+        (folder / core.PHOTOS).mkdir()
+        Image.new("RGB", (800, 600), "red").save(folder / core.PHOTOS / "1.jpg")
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        path = thumbs.make_for(ch, folder, 1, "300발 쏴야 / 겨우 1명", "제목", "설명")
+        mine = core.load_prep(folder)["1"]
+        note = json.loads(path.with_suffix(".json").read_text("utf-8"))
+        assert mine["사진자리_추천"] and mine["사진자리"] == note["used"]["photo"] is None or mine["사진자리"] == note["sig"]["box"]
+        assert thumbs.make_for(ch, folder, 1, "300발 쏴야 / 겨우 1명", "제목", "설명") == path  # 그대로면 다시 안 만듦
+        # 직접 옮긴 자리
+        manual = [60, 180, 400, 300]
+        steps.remember(folder, 1, 사진자리=manual, 사진자리_추천=False)
+        calls = []
+        saved = (ai.client, ai.plan, ai.score)
+        ai.client = lambda key: "CL"
+        ai.plan = lambda *a, **k: calls.append("plan") or {}
+        ai.score = lambda *a, **k: calls.append("score") or {"total": 70, "inset_ok": False, "better_spot": 0}  # 가린다고 해도 직접 정한 자리는 그대로
+        try:
+            path = thumbs.make_for(ch, folder, 1, "300발 쏴야 / 겨우 1명", "제목", "설명", "sk-test")
+        finally:
+            ai.client, ai.plan, ai.score = saved
+        note = json.loads(path.with_suffix(".json").read_text("utf-8"))
+        assert calls == ["score"] and note["review"]["total"] == 70 and note["sig"]["box"] == manual and note["used"]["photo"] == "직접", (calls, note)  # 디자인은 그대로
+        img = Image.open(path).resize((1280, 720)).convert("RGB")
+        assert img.getpixel((60 + 200, 180 + 150))[0] > 150  # 그 자리에 사진(빨강)
+        assert core.load_prep(folder)["1"]["사진자리"] == manual
+        # 추천 자리 (Claude): 고른 번호의 실제 칸
+        saved = (ai.client, ai.photo_spot)
+        ai.client, ai.photo_spot = (lambda key: "CL"), (lambda cl, base, photo, spots: {"spot": 2, "size": 1.0})
+        try:
+            box = thumbs.recommend_box(ch, folder / core.MATERIAL / "1" / "a.png", folder / core.PHOTOS / "1.jpg", "sk-test")
+        finally:
+            ai.client, ai.photo_spot = saved
+        name, region, anchor = thumbs._spot(thumbs._spots(thumbs.load_template(ch))[2], 2)
+        assert box == thumbs._place(region, anchor, 800 / 600, 1.0) and name == "왼쪽위_마크옆"
+        assert thumbs.recommend_box(ch, folder / core.MATERIAL / "1" / "a.png", folder / core.PHOTOS / "1.jpg") == \
+            thumbs.recommend_box(ch, folder / core.MATERIAL / "1" / "a.png", folder / core.PHOTOS / "1.jpg")  # 키 없으면 늘 같은 추천
+        # 사진을 아래 가운데에 두면 글자는 다른 자리로
+        out = thumbs.compose(ch, Image.new("RGB", (1600, 900), (40, 60, 80)), "300발 / 겨우 1명", {"layout": "아래_가운데", "photo_box": [320, 400, 640, 300]},
+                             Image.new("RGB", (800, 600), "red"), random.Random(0))
+        assert out.info["layout"]["name"] != "아래_가운데", out.info["layout"]["name"]
+
+
 def test_ai_request_and_commons_filter():
     """Claude 요청 형식(모델·구조화 출력·거절 시 다른 모델), 거절 처리, 위키미디어 저작권 거르기."""
     import io as _io
@@ -1042,7 +1100,10 @@ def test_channel_template_wwh():
             assert bw * bh >= 0.9 * thumbs.MIN_PHOTO, info["photo"]  # 휴대폰에서도 알아볼 만한 크기
             assert thumbs._covered([bx, by, bw, bh], info["boxes"]) <= thumbs.MAX_COVER, info  # 글자와 조금만 겹침
             seen.add(info["photo"]["spot"])
-        assert len(seen) >= 3, seen
+        assert len(seen) >= 2, seen  # 글자 자리가 바뀌면 사진 자리도 (같은 배경이면 무작위가 아니라 늘 같은 추천)
+        pick = lambda i: thumbs.compose(ch, Image.new("RGB", (1600, 900), (40, 60, 80)), "300발 쏴야 / 겨우 1명", {"layout": "아래_가운데"},
+                                        Image.new("RGB", (600, 800), (200, 0, 0)), random.Random(i)).info["layout"]["photo"]["spot"]
+        assert len({pick(i) for i in range(6)}) == 1
         tall = thumbs._place([880, 10, 390, 520], "tr", 0.5, 1.0)
         wide = thumbs._place([690, 10, 580, 370], "tr", 2.5, 0.8)
         assert tall[2] < tall[3] and tall[0] + tall[2] == 1270 and wide[2] > wide[3] and wide[0] + wide[2] == 1270

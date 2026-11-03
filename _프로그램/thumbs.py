@@ -356,6 +356,14 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None, scale=1):
         if not lay:
             pool = [x for x in layouts if x["name"] not in plan.get("avoid", [])] or layouts
             lay = rnd.choices(pool, weights=[x.get("weight", 1) * plan.get("boost", {}).get(x["name"], 1) for x in pool])[0]
+        if plan.get("photo_box") and photo:  # 사진 자리가 정해져 있으면: 글자 자리가 사진을 많이 덮으면 덜 덮는 자리로
+            pb = [v * scale for v in plan["photo_box"]]
+            def over(x):
+                bx = x["box"]
+                return max(0, min(bx[0] + bx[2], pb[0] + pb[2]) - max(bx[0], pb[0])) * \
+                    max(0, min(bx[1] + bx[3], pb[1] + pb[3]) - max(bx[1], pb[1])) / max(1, pb[2] * pb[3])
+            if over(lay) > 0.35:
+                lay = min(layouts, key=over)
         t.update({k: lay[k] for k in ("box", "valign") if k in lay})
         t["sides"], spots_ok = [lay.get("align", "center")], lay.get("spots")
         plan = plan | {"side": t["sides"][0], "layout": lay["name"]}
@@ -424,8 +432,13 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None, scale=1):
     inset = tpl.get("inset")
     spots = _spots(tpl)
     allowed = [i for i in range(len(spots)) if spots_ok is None or i in spots_ok]  # 이 글자 자리에서 쓸 수 있는 사진 자리
-    photo_info = None
-    if photo and allowed:  # 실제 사진: 사진 비율대로, 편마다 다른 자리·크기. 글자와 조금 겹쳐도 됨 (글자가 위에 그려짐)
+    photo_info, fixed = None, plan.get("photo_box")
+    if photo and fixed:  # 준비 화면에서 직접 옮기고 크기를 정한 자리 (1280x720 기준) — 그대로
+        src = _image(photo)
+        x, y, w, h = [round(v * scale) for v in fixed]
+        photo_info = {"spot": "직접", "size": 1.0, "box": [x, y, w, h],
+                      "covered": round(_covered([x, y, w, h], _line_boxes(lines, font, box, side, t, stroke)), 2)}
+    elif photo and allowed:  # 실제 사진: 사진 비율대로, 편마다 다른 자리·크기. 글자와 조금 겹쳐도 됨 (글자가 위에 그려짐)
         src = _image(photo)
         ratio = src.width / src.height
         size = plan["photo_size"] if isinstance(plan.get("photo_size"), (int, float)) else rnd.uniform(0.92, 1.0)
@@ -449,11 +462,11 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None, scale=1):
             ok = {k: 0.8}
         if plan.get("spot") in ok:  # Claude가 배경을 보고 고른 자리
             i = plan["spot"]
-        else:  # 없으면 배경이 덜 복잡한 곳(하늘·땅 등, 얼굴·주인공이 아닐 가능성이 큰 곳)을 더 자주
+        else:  # 없으면 배경이 가장 덜 복잡한 곳 (하늘·땅 등, 얼굴·주인공이 아닐 가능성이 큰 곳). 무작위 아님: 늘 같은 추천
             edges = canvas.convert("L").filter(ImageFilter.FIND_EDGES)
             keys = list(ok)
             busy = [ImageStat.Stat(edges.crop(_box_xyxy(placed(k, ok[k])))).mean[0] for k in keys]
-            i = rnd.choices(keys, weights=[1 / (b + 4) ** 2 for b in busy])[0]
+            i = keys[busy.index(min(busy))]
         size = ok[i]
         x, y, w, h = placed(i, size)
         if mark:  # 채널 마크를 가리지 않게 마크 아래로
@@ -462,6 +475,8 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None, scale=1):
                 y = ly + mark.height + 24 * scale
         photo_info = {"spot": _spot(spots[i], i)[0], "size": round(size, 2), "box": [x, y, w, h],
                       "covered": round(_covered([x, y, w, h], text_boxes), 2)}
+    if photo_info:
+        x, y, w, h = photo_info["box"]
         pic = _cover(src, w, h)
         b = inset.get("border", 0)
         framed = Image.new("RGBA", (w + 2 * b, h + 2 * b), inset.get("border_color", "#FFFFFF"))
@@ -614,9 +629,9 @@ def _fetch_photo(folder, num, title, desc, text, key, log, force):
     return path
 
 
-def preview(ch, base, photo, out):
-    """후보 미리보기: 후보 그림 + 실제 사진 (글자 없이). 채널 마크는 그대로."""
-    img = compose(ch, base, "", {"side": "left"}, photo, random.Random(0))
+def preview(ch, base, photo, out, box=None):
+    """후보 미리보기: 후보 그림 + 실제 사진 (글자 없이). 채널 마크는 그대로. box: 직접 정한 사진 자리"""
+    img = compose(ch, base, "", {"side": "left", "photo_box": box}, photo, random.Random(0))
     img.thumbnail((640, 360))
     img.save(out, "JPEG", quality=85)
     return out
@@ -632,25 +647,37 @@ def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=
     if not text:
         raise ValueError(f"{num}번 썸네일 문구가 비어 있습니다.")
     tpl = load_template(ch)
-    photo = fetch_photo(folder, num, title, desc, text, key, log) if tpl.get("inset") else None
+    mine = core.load_prep(folder).get(str(num), {})  # 준비 화면에서 직접 정한 것: 사진 자리, 사진 빼기
+    box, no_photo = mine.get("사진자리"), bool(mine.get("사진빼기"))
+    auto = bool(mine.get("사진자리_추천"))  # 프로그램·Claude가 추천한 자리 (직접 옮긴 자리는 False)
+    photo = fetch_photo(folder, num, title, desc, text, key, log) if tpl.get("inset") and not no_photo else None
     path = Path(folder) / f"{num}_자동썸네일.jpg"
     note = path.with_suffix(".json")
-    sig = {"text": text, "base": base.name, "size": base.stat().st_size, "photo": photo.stat().st_size if photo else 0}
-    if not force and path.exists() and note.exists() and json.loads(note.read_text("utf-8")).get("sig") == sig:
+    sig = {"text": text, "base": base.name, "size": base.stat().st_size, "photo": photo.stat().st_size if photo else 0,
+           "box": box, "no_photo": no_photo}
+    old = json.loads(note.read_text("utf-8")) if path.exists() and note.exists() else {}
+    if not force and old.get("sig") == sig:
         return path
+    same_design = not force and old.get("plan") and {k: v for k, v in old.get("sig", {}).items() if k not in ("box", "no_photo")} \
+        == {k: v for k, v in sig.items() if k not in ("box", "no_photo")}  # 사진 자리만 바꿨으면 글자 디자인은 그대로
     plan, review = {}, None
     use_ai = bool(key or os.environ.get("ANTHROPIC_API_KEY"))
     made = _MADE.setdefault(str(folder), {})
     with _LOCKS.setdefault(str(folder), threading.Lock()):  # 같은 채널은 디자인을 차례로 정한다 (동시에 만든 편끼리도 안 겹치게)
         recent = used_before(folder, path, skip=made) + [u for p, u in made.items() if p != path]
         stats = ctr_stats(ch)
-        if use_ai:
+        if same_design:
+            plan = {k: v for k, v in old["plan"].items() if k not in ("photo_box", "avoid_spots")}
+        elif use_ai:
             import ai
             ratio = (lambda im: im.width / im.height)(Image.open(photo)) if photo else None
-            plan = ai.plan(ai.client(key), base, text, title, desc, options(ch, tpl, ratio), recent[-4:], ctr_text(stats), photo)
+            plan = ai.plan(ai.client(key), base, text, title, desc, options(ch, tpl, ratio) | {"photo_fixed": box if photo else None},
+                           recent[-4:], ctr_text(stats), photo)
         else:  # Claude 없이: 최근 두 편에 쓴 글자 자리는 피하고, 클릭률이 좋았던 자리를 더 자주
             plan = {"avoid": [r.get("layout") for r in recent[-2:]], "boost": boost(stats.get("layout", {}))}
-        img = compose(ch, base, text, plan, photo, rnd, FINAL_SCALE)
+        if box:
+            plan["photo_box"] = box
+        img = compose(ch, base, text, plan, photo, rnd or (random.Random(json.dumps(sig)) if same_design else None), FINAL_SCALE)
         lay = img.info["layout"]
         used = {"layout": lay["name"], "font": lay["font"], "style": lay["style"], "lines": lay["lines"],
                 "photo": (lay["photo"] or {}).get("spot"), "photo_size": (lay["photo"] or {}).get("size")}
@@ -658,6 +685,7 @@ def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=
         made[path] = {k: used[k] for k in ("layout", "font", "style", "photo", "photo_size") if used[k] is not None}
     checks, points = check(img)
     if use_ai:
+        import ai  # 사진만 옮긴 경우(위에서 Claude 디자인을 건너뜀)에도 점수는 다시
         try:
             lay_def = next((x for x in tpl.get("layouts") or [] if x["name"] == used["layout"]), {})
             names = options(ch, tpl, (lambda im: im.width / im.height)(Image.open(photo)) if photo else None)["spots"]
@@ -665,12 +693,13 @@ def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=
             review = ai.score(ai.client(key), img, title, text, desc, examples(ch), checks, spot_list)
             for attempt in (1, 2):  # 실제 사진이 배경 얼굴·주인공을 가리면: Claude가 말한 자리로 한 번, 그래도면 사진 없이
                 spot = (img.info["layout"].get("photo") or {}).get("spot")
-                if review.get("inset_ok") is not False or not spot:
+                if review.get("inset_ok") is not False or not spot or (spot == "직접" and not auto):  # 직접 옮긴 자리는 그대로
                     break
                 better = review.get("better_spot")
                 if attempt == 1 and isinstance(better, int) and better >= 0:
                     log(f"    {num}번: 실제 사진이 배경을 가려 다른 자리({better}번)로 다시 만듭니다")
-                    plan = plan | {"avoid_spots": plan.get("avoid_spots", []) + [spot], "spot": better}
+                    plan = {k: v for k, v in plan.items() if k != "photo_box"} | {
+                        "avoid_spots": plan.get("avoid_spots", []) + ([spot] if spot != "직접" else []), "spot": better}
                     img = compose(ch, base, text, plan, photo, rnd, FINAL_SCALE)
                 else:
                     log(f"    {num}번: 실제 사진을 둘 자리가 마땅치 않아 사진 없이 만듭니다")
@@ -682,6 +711,12 @@ def make_for(ch, folder, num, text, title="", desc="", key="", log=print, force=
                 used |= {"photo": (lay["photo"] or {}).get("spot"), "photo_size": (lay["photo"] or {}).get("size")}
         except Exception as e:
             log(f"    (Claude 점수 실패: {e})")
+    final_box = (img.info["layout"].get("photo") or {}).get("box")
+    if photo and final_box != box and (auto or not box):  # 프로그램이 정한 자리를 준비 화면에도: 미리보기 = 최종
+        data = core.load_prep(folder)
+        data.setdefault(str(num), {}).update({"사진자리": final_box, "사진자리_추천": True})
+        core.save_prep(folder, data)
+        sig["box"] = final_box
     save(img, path)
     note.write_text(json.dumps({"sig": sig, "plan": plan, "used": used, "check": checks, "check_score": points, "review": review},
                                ensure_ascii=False, indent=1), "utf-8")
@@ -802,6 +837,32 @@ def ctr_text(stats):
     names = {"layout": "글자 자리", "font": "글씨체", "style": "색 조합"}
     parts = [f"{names[k]} {v} {r}% ({n}편)" for k, g in stats.items() for v, (r, n) in sorted(g.items(), key=lambda x: -x[1][0])]
     return " · ".join(parts)
+
+
+def recommend_box(ch, base, photo, key=""):
+    """실제 사진 추천 자리 (1280x720 기준 [x,y,w,h]): Claude 키가 있으면 배경과 사진을 보고 얼굴·주인공을 피해 고르고,
+    없으면 배경이 가장 덜 복잡한 곳."""
+    tpl = load_template(ch)
+    spots = _spots(tpl)
+    if spots and (key or os.environ.get("ANTHROPIC_API_KEY")):
+        try:
+            import ai
+            src = _image(photo)
+            ratio = src.width / src.height
+            r = ai.photo_spot(ai.client(key), base, photo, options(ch, tpl, ratio)["spots"])
+            i = r.get("spot")
+            if isinstance(i, int) and 0 <= i < len(spots):
+                _, region, anchor = _spot(spots[i], i)
+                return _place(region, anchor, ratio, min(1.0, max(0.85, float(r.get("size") or 0.95))))
+        except Exception:
+            pass  # Claude가 안 되면 아래 방법으로
+    return auto_box(ch, base, photo)
+
+
+def auto_box(ch, base, photo):
+    """프로그램이 고를 사진 자리 (1280x720 기준 [x,y,w,h]) — 직접 옮기기 창의 처음 위치."""
+    info = compose(ch, base, "", {"side": "left"}, photo, random.Random(0)).info["layout"].get("photo")
+    return info["box"] if info else None
 
 
 def examples(ch, n=3):

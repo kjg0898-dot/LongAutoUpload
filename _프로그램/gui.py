@@ -2,6 +2,7 @@
 import json
 import os
 import queue
+import random
 import re
 import shutil
 import subprocess
@@ -791,6 +792,9 @@ class PrepWindow:
             "영상마다 후보 그림을 클릭해 고르고 제목·썸네일 문구(/ 로 줄 나눔)를 고치세요. 고친 것은 바로 저장됩니다.\n"
             "그림은 영상 칸에 끌어다 놓거나 '그림 넣기'. 실제 사진은 주제마다 자동으로 찾아 합성해 보여줍니다.")).pack(side="left")
         ttk.Button(top, text="최종 썸네일 만들기 (전부)", command=self.make_all).pack(side="right")
+        self.only = tk.BooleanVar(value=getattr(app, "prep_only", True))
+        ttk.Checkbutton(top, text="그림 넣은 영상만 보기", variable=self.only,
+                        command=lambda: (setattr(app, "prep_only", self.only.get()), app.open_prep(again=True))).pack(side="right", padx=8)
         self.tabs = ttk.Notebook(win)
         self.tabs.pack(fill="both", expand=True, padx=8, pady=4)
         self.cards, self.images, self.canvases = {}, [], []
@@ -798,8 +802,14 @@ class PrepWindow:
             folder, items = self.app.steps.prep_items(ch)
             if not items:
                 continue
+            total = len(items)
+            if self.only.get() and ch["thumb_auto"]:  # 그림을 넣은 영상만 (SEO에 있어도 그림이 없으면 이번에 안 올리는 영상)
+                items = [i for i in items if i["후보"]]
             tab = ttk.Frame(self.tabs)
-            self.tabs.add(tab, text=f" {ch['name']} ({len(items)}) ")
+            self.tabs.add(tab, text=f" {ch['name']} ({len(items)}/{total}) " if len(items) != total else f" {ch['name']} ({total}) ")
+            if not items:
+                ttk.Label(tab, padding=20, text="아직 그림을 넣은 영상이 없습니다. 그림을 끌어다 놓거나, 위의 '그림 넣은 영상만 보기'를 끄세요.").pack()
+                continue
             if not ch["thumb_auto"]:
                 ttk.Label(tab, foreground=COLORS["muted"], padding=6, text=(
                     "이 채널은 썸네일을 직접 만든 완성본으로 넣습니다 (설정에서 '썸네일 자동 만들기'를 켜면 여기서 후보를 골라 만듭니다).")).pack(anchor="w")
@@ -821,6 +831,7 @@ class PrepWindow:
             pass
         fit(win)
         self.find_photos()
+        self.recommend()
 
     def current_canvas(self):
         i = self.tabs.index("current") if self.tabs.tabs() else None
@@ -843,6 +854,12 @@ class PrepWindow:
         if ch["thumb_auto"]:
             ttk.Button(bar, text="최종 만들기", command=lambda: self.make(c, force=True)).pack(side="right")
             ttk.Button(bar, text="실제 사진 다시 찾기", command=lambda: self.find_photos([c], force=True)).pack(side="right", padx=4)
+            bar2 = ttk.Frame(side)
+            bar2.pack(fill="x", pady=(4, 0))
+            ttk.Button(bar2, text="사진 위치·크기", command=lambda: self.place_photo(c)).pack(side="right")
+            ttk.Button(bar2, text="실제 사진 크게 보기", command=lambda: self.view_photo(c)).pack(side="right", padx=4)
+        c["final"].bind("<Button-1>", lambda e: c["item"]["최종"] and view_image(self.win, c["item"]["최종"], f"{c['item']['num']}번 최종 썸네일"))
+        c["final"].config(cursor="hand2")
         c["photo_note"] = ttk.Label(side, foreground=COLORS["muted"], wraplength=self.FINAL)
         c["photo_note"].pack(anchor="w")
         c["err"] = ttk.Label(side, foreground=COLORS["accent"], wraplength=self.FINAL)
@@ -910,7 +927,8 @@ class PrepWindow:
             try:
                 import thumbs
                 from PIL import Image
-                img = thumbs.compose(c["ch"], path, "", {"side": "left"}, c["item"]["실제사진"]) if c["item"]["실제사진"] \
+                photo = None if c["item"].get("사진빼기") else c["item"]["실제사진"]
+                img = thumbs.compose(c["ch"], path, "", {"side": "left", "photo_box": c["item"].get("사진자리")}, photo) if photo \
                     else Image.open(path).convert("RGB")
                 img.thumbnail((self.PREVIEW, self.PREVIEW))
             except Exception as e:
@@ -949,6 +967,20 @@ class PrepWindow:
             lines.append(f"자동 점검 {points}/100" + "".join(f"\n⚠ {m}" for ok, m in checks if not ok))
         c["score"].config(text="\n".join(lines), foreground=COLORS["accent"] if review and not review.get("policy_ok", True) else "")
 
+    def view_photo(self, c):
+        photo = c["item"]["실제사진"]
+        if not photo:
+            return messagebox.showinfo("실제 사진", "아직 찾은 실제 사진이 없습니다 (Claude API 키가 있으면 자동으로 찾음).", parent=self.win)
+        note = photo.with_suffix(".json")
+        credit = json.loads(note.read_text("utf-8")).get("credit", "") if note.exists() else ""
+        view_image(self.win, photo, f"{c['item']['num']}번 실제 사진 — {credit or photo.name}",
+                   f"위키미디어 공용 (저작권이 풀린 사진): {credit}" if credit else "")
+
+    def place_photo(self, c):
+        if not (c["item"]["선택"] and c["item"]["실제사진"]):
+            return messagebox.showinfo("사진 위치", "후보 그림과 실제 사진이 있어야 위치를 정할 수 있습니다.", parent=self.win)
+        PhotoPlacer(self, c)
+
     def refresh(self, c):
         _, items = self.app.steps.prep_items(c["ch"])
         c["item"] = next((i for i in items if i["num"] == c["item"]["num"]), c["item"])
@@ -959,6 +991,27 @@ class PrepWindow:
     def choose(self, c, path):
         self.app.steps.remember(c["folder"], c["item"]["num"], 선택=str(Path(path).relative_to(c["folder"])))
         self.refresh(c)
+        self.recommend([c], again=True)  # 배경이 바뀌었으니 추천 자리도 새로 (직접 옮긴 자리는 그대로)
+
+    def recommend(self, cards=None, again=False):
+        """실제 사진 추천 자리를 정해 둔다 (아직 없거나, again이면 프로그램이 정한 자리만 새로). 직접 옮긴 자리는 건드리지 않음."""
+        todo = [c for c in (cards or self.cards.values()) if c["ch"]["thumb_auto"] and c["item"]["선택"] and c["item"]["실제사진"]
+                and not c["item"]["사진빼기"] and (again or not c["item"]["사진자리"])]
+        if todo:
+            self._background(todo, lambda c: self.recommend_one(c, again), "사진 자리 추천")
+
+    def recommend_one(self, c, again=False):
+        import thumbs
+        folder, num = c["folder"], c["item"]["num"]
+        mine = core.load_prep(folder).get(str(num), {})
+        base, photo = core.material_for(folder, num), folder / core.PHOTOS / f"{num}.jpg"
+        if not base or not photo.exists() or mine.get("사진빼기"):
+            return
+        if mine.get("사진자리") and (not mine.get("사진자리_추천") or not again):
+            return  # 직접 옮긴 자리, 또는 이미 추천한 자리
+        box = thumbs.recommend_box(c["ch"], base, photo, self.cfg.get("claude_key", ""))
+        if box:
+            self.app.steps.remember(folder, num, 사진자리=box, 사진자리_추천=True)
 
     def save(self, c, key):
         widget = c[key]
@@ -1035,6 +1088,7 @@ class PrepWindow:
                 try:
                     thumbs.fetch_photo(c["folder"], c["item"]["num"], c["item"]["제목"], c["item"]["설명"],
                                        c["item"]["썸네일문구"], key, self.app.log, force)
+                    self.recommend_one(c, again=force)  # 찾은 사진의 추천 자리
                 finally:
                     FINDING.discard((c["folder"], c["item"]["num"]))
             self._background(todo, find, "실제 사진 찾기")
@@ -1055,6 +1109,137 @@ class PrepWindow:
         self._background(todo, lambda c: thumbs.make_for(
             c["ch"], c["folder"], c["item"]["num"], c["item"]["썸네일문구"], c["item"]["제목"], c["item"]["설명"],
             key, self.app.log, force), "최종 썸네일")
+
+
+def view_image(parent, path, title, note=""):
+    """그림을 화면에 맞게 크게 보기."""
+    win = tk.Toplevel(parent)
+    win.title(title)
+    w, h = int(win.winfo_screenwidth() * 0.8), int(win.winfo_screenheight() * 0.75)
+    img = photo_image(path, w)
+    if img and img.height() > h:
+        img = photo_image(path, int(w * h / img.height()))
+    label = tk.Label(win, image=img or "", text="" if img else "그림을 못 읽음")
+    label.image = img
+    label.pack(padx=8, pady=8)
+    if note:
+        ttk.Label(win, text=note, foreground=COLORS["muted"]).pack(pady=(0, 8))
+    ttk.Button(win, text="닫기", command=win.destroy).pack(pady=(0, 10))
+    win.bind("<Escape>", lambda e: win.destroy())
+    fit(win)
+
+
+class PhotoPlacer:
+    """실제 사진 위치·크기 직접 정하기: 끌어서 옮기고, 휠(또는 +/−)로 크기. 저장하면 미리보기·최종 썸네일·자동 처리에 그대로."""
+    W, H = 640, 360  # 1280x720의 절반으로 보여줌
+
+    def __init__(self, prep, c):
+        import thumbs
+        from PIL import Image
+        self.prep, self.c = prep, c
+        item, ch = c["item"], c["ch"]
+        win = self.win = tk.Toplevel(prep.win)
+        win.title(f"{item['num']}번 실제 사진 위치·크기")
+        win.transient(prep.win)
+        win.grab_set()
+        ttk.Label(win, padding=(12, 10, 12, 4), justify="left", text=(
+            "사진을 끌어서 옮기고, 마우스 휠(또는 + / −)로 크기를 바꾸세요. 얼굴을 가리지 않는 곳으로.\n"
+            "글자 자리는 최종 썸네일에서 정해지니, 최종이 있으면 그 글자도 함께 보여줍니다.")).pack(anchor="w")
+        plan = {"side": "left"}
+        text = ""
+        final = item["최종"]
+        if final and final.with_suffix(".json").exists():  # 최종이 있으면 그 글자 자리·글씨체 그대로 깔아서 보여줌
+            plan = json.loads(final.with_suffix(".json").read_text("utf-8")).get("plan") or plan
+            text = item["썸네일문구"]
+        plan = {k: v for k, v in plan.items() if k != "photo_box"}
+        try:
+            bg = thumbs.compose(ch, item["선택"], text, plan, None, random.Random(0))
+        except Exception:
+            bg = thumbs.compose(ch, item["선택"], "", {"side": "left"}, None, random.Random(0))
+        self.src = Image.open(item["실제사진"]).convert("RGB")
+        self.ratio = min(1.9, max(0.75, self.src.width / self.src.height))  # 프로그램과 같은 비율 (너무 길쭉하면 조금 자름)
+        box = item.get("사진자리") or thumbs.auto_box(ch, item["선택"], item["실제사진"]) or [700, 20, 540, 540 / self.ratio]
+        self.w = float(box[2])
+        self.x, self.y = float(box[0]), float(box[1])
+        from PIL import ImageTk
+        self.bg = ImageTk.PhotoImage(bg.resize((self.W, self.H)))
+        self.canvas = tk.Canvas(win, width=self.W, height=self.H, highlightthickness=0)
+        self.canvas.pack(padx=12)
+        self.canvas.create_image(0, 0, image=self.bg, anchor="nw")
+        self.item = self.canvas.create_image(0, 0, anchor="nw")
+        self.frame = self.canvas.create_rectangle(0, 0, 0, 0, outline="#FFEB00", width=2)
+        self.canvas.bind("<ButtonPress-1>", self.grab)
+        self.canvas.bind("<B1-Motion>", self.drag)
+        self.canvas.bind("<MouseWheel>", lambda e: self.resize(1.05 if e.delta > 0 else 1 / 1.05))
+        self.canvas.bind("<Button-4>", lambda e: self.resize(1.05))  # 리눅스 휠
+        self.canvas.bind("<Button-5>", lambda e: self.resize(1 / 1.05))
+        bar = ttk.Frame(win, padding=12)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="−", width=3, command=lambda: self.resize(1 / 1.1)).pack(side="left")
+        ttk.Button(bar, text="+", width=3, command=lambda: self.resize(1.1)).pack(side="left", padx=4)
+        ttk.Button(bar, text="이 자리로 저장 ▶", command=self.save).pack(side="right")
+        ttk.Button(bar, text="취소", command=win.destroy).pack(side="right", padx=6)
+        ttk.Button(bar, text="추천 자리로", command=lambda: self.done(사진자리=None, 사진자리_추천=False, 사진빼기=False)).pack(
+            side="right", padx=6)
+        ttk.Button(bar, text="실제 사진 빼기", command=lambda: self.done(사진자리=None, 사진빼기=True)).pack(side="right")
+        self.draw()
+        fit(win)
+
+    def box(self):
+        return [round(self.x), round(self.y), round(self.w), round(self.w / self.ratio)]
+
+    def draw(self):
+        from PIL import ImageTk
+        import thumbs
+        self.w = min(1280.0, max(160.0, self.w))
+        h = self.w / self.ratio
+        if h > 720:
+            self.w, h = 720 * self.ratio, 720.0
+        self.x = min(1280 - self.w, max(0.0, self.x))
+        self.y = min(720 - h, max(0.0, self.y))
+        s = self.W / 1280
+        pic = thumbs._cover(self.src, max(1, round(self.w * s)), max(1, round(h * s)))
+        self.pic = ImageTk.PhotoImage(pic)
+        self.canvas.itemconfig(self.item, image=self.pic)
+        self.canvas.coords(self.item, self.x * s, self.y * s)
+        self.canvas.coords(self.frame, self.x * s, self.y * s, (self.x + self.w) * s, (self.y + h) * s)
+
+    def grab(self, e):
+        self.start = (e.x, e.y, self.x, self.y)
+
+    def drag(self, e):
+        s = 1280 / self.W
+        x0, y0, bx, by = self.start
+        self.x, self.y = bx + (e.x - x0) * s, by + (e.y - y0) * s
+        self.draw()
+
+    def resize(self, k):
+        cx, cy = self.x + self.w / 2, self.y + self.w / self.ratio / 2  # 가운데를 기준으로
+        self.w *= k
+        self.x, self.y = cx - self.w / 2, cy - self.w / self.ratio / 2
+        self.draw()
+
+    def save(self):
+        self.done(사진자리=self.box(), 사진자리_추천=False, 사진빼기=False)
+
+    def done(self, **fields):
+        c = self.c
+        self.prep.app.steps.remember(c["folder"], c["item"]["num"], **fields)
+        self.win.destroy()
+        had_final = bool(c["item"]["최종"])
+        self.prep.refresh(c)
+        if fields.get("사진자리") is None and not fields.get("사진빼기"):  # 추천 자리로: 다시 추천받고, 최종이 있었으면 그 자리로 다시
+            import thumbs
+            prep, key = self.prep, self.prep.cfg.get("claude_key", "")
+
+            def job(c):
+                prep.recommend_one(c, again=True)
+                if had_final:
+                    item = c["item"]
+                    thumbs.make_for(c["ch"], c["folder"], item["num"], item["썸네일문구"], item["제목"], item["설명"], key, prep.app.log)
+            prep._background([c], job, "사진 자리 추천")
+        elif had_final:  # 최종이 있었으면 사진만 옮겨 다시 만든다 (글자 디자인은 그대로)
+            self.prep.make(c)
 
 
 class ReplyReview:

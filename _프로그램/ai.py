@@ -105,7 +105,10 @@ def plan(cl, base, text, title, desc, opts, recent=(), ctr="", photo=None):
         props["font"] = {"type": "string", "enum": list(fonts)}
     ask_text.append("size: 글자 크기 배율 0.85~1.1 (문구가 짧고 강할수록 크게, 배경이 복잡하면 조금 작게).")
     props["size"] = {"type": "number"}
-    if len(spots) > 1 and photo is not None:
+    if opts.get("photo_fixed"):  # 실제 사진 자리는 이미 정해짐 (준비 화면에서 추천·조정한 자리)
+        ask_text.append(f"실제 사진은 {opts['photo_fixed']} (1280x720 기준 x,y,너비,높이)에 놓기로 정해졌습니다. "
+                        "문구 자리(layout)는 이 사진과 겹치지 않는 곳으로 고를 것.")
+    elif len(spots) > 1 and photo is not None:
         ask_text.append("spot: 두 번째로 첨부한 실제 사진을 놓을 자리 번호. 고른 layout에서 쓸 수 있는 자리 중에서, 배경 속 얼굴·핵심 대상을 가리지 않고 "
                         "배경에서 비어 있거나 덜 중요한 곳 (→ 뒤의 칸이 이 사진이 실제로 차지할 곳이니 그 안에 배경 인물 얼굴이 들어가면 안 됨). 사진은 자기 비율대로 그 자리 안에 들어가고, 글자와 조금(사진의 4분의 1까지) 겹쳐도 됨 "
                         "(글자가 외곽선과 함께 위에 그려짐). 자리(1280x720 기준 x,y,너비,높이): "
@@ -126,6 +129,17 @@ def plan(cl, base, text, title, desc, opts, recent=(), ctr="", photo=None):
     out = ask(cl, images + [{"type": "text", "text": "\n".join(ask_text)}], _schema(props))
     out["accents"] = [a for a in out.get("accents", []) if a.strip() and a.strip() in text]  # 문구에 없는 말은 버림
     return out
+
+
+def photo_spot(cl, base, photo, spots):
+    """배경 그림과 실제 사진을 보고 사진을 놓을 자리 추천: {'spot': 번호, 'size': 0.85~1.0}."""
+    content = [{"type": "text", "text": "배경 그림:"}, image_block(base), {"type": "text", "text": "얹을 실제 사진:"}, image_block(photo, 512),
+               {"type": "text", "text": (
+                   "유튜브 썸네일 배경 위에 실제 사진을 네모로 얹습니다. 배경 속 사람 얼굴과 핵심 대상을 가리지 않고, 배경에서 비어 있거나 "
+                   "덜 중요한 곳을 고르세요. 휴대폰 작은 화면에서도 사진이 보이게 너무 작지 않게.\n"
+                   "spot: 자리 번호 (1280x720 기준, → 뒤가 이 사진이 실제로 차지할 칸): " + ", ".join(f"{i}번 {s}" for i, s in enumerate(spots))
+                   + "\nsize: 자리 대비 크기 0.85~1.0")}]
+    return ask(cl, content, _schema({"spot": {"type": "integer"}, "size": {"type": "number"}}))
 
 
 def queries(cl, title, desc, text):

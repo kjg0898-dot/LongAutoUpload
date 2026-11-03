@@ -795,6 +795,7 @@ class PrepWindow:
         style.configure("Tag.TLabel", font=(FONT, 9), foreground=COLORS["muted"])
         style.configure("Orig.TLabel", font=(FONT, 9, "bold"), foreground="#8A5A00")
         style.configure("Primary.TButton", font=(FONT, 10, "bold"))
+        style.configure("Small.TButton", font=(FONT, 8), padding=(2, 0))
         top = ttk.Frame(win, padding=(12, 10, 12, 4))
         top.pack(fill="x")
         ttk.Label(top, justify="left", text=(
@@ -915,7 +916,7 @@ class PrepWindow:
         opts = list(values) + ([orig] if orig and orig not in values else [])
         choice = tk.StringVar(value=str(opts.index(current)) if current in opts else "own")
         own = tk.StringVar(value="" if current in opts else current)
-        width = max(360, self.win.winfo_screenwidth() - self.FINAL - 460)
+        width = max(320, self.win.winfo_screenwidth() - self.FINAL - 600)  # 오른쪽에 고쳐 쓰기·복사 버튼 자리
         limit = None
         if key == "썸네일문구":
             import thumbs
@@ -933,6 +934,18 @@ class PrepWindow:
 
         rows = {}
 
+        def copy(v):
+            self.win.clipboard_clear()
+            self.win.clipboard_append(v)
+            self.app.log(f"복사했습니다: {v[:40]}")
+
+        def rewrite(v):  # 이 문구를 직접 입력 칸에 넣고 바로 고치게
+            own.set(v)
+            typed()
+            entry.focus_set()
+            entry.icursor("end")
+            self.save(c, key)
+
         def option(n, v, tag, tag_style, at):
             row = ttk.Frame(frame)
             row.grid(row=at, column=0, sticky="w", pady=1)
@@ -942,6 +955,9 @@ class PrepWindow:
             lab = ttk.Label(row, text=v + note(v), wraplength=width, justify="left", cursor="hand2", style="Opt.TLabel")
             lab.pack(side="left", anchor="w")
             lab.bind("<Button-1>", lambda e: (choice.set(str(n)), pick_value(v)))
+            lab.bind("<Button-3>", lambda e: copy(v))  # 오른쪽 클릭으로도 복사
+            ttk.Button(row, text="고쳐 쓰기", style="Small.TButton", command=lambda: rewrite(v)).pack(side="left", padx=(8, 0), anchor="n")
+            ttk.Button(row, text="복사", style="Small.TButton", command=lambda: copy(v)).pack(side="left", padx=(4, 0), anchor="n")
             rows[str(n)] = lab
 
         for n, v in enumerate(values):
@@ -960,6 +976,8 @@ class PrepWindow:
         entry.pack(side="left", padx=4)
         size = ttk.Label(row, foreground=COLORS["muted"], text=note(own.get()) if own.get() else "")
         size.pack(side="left")
+        for ev in ("<<Paste>>", "<<Cut>>"):  # 붙여넣기·잘라내기도 바로 반영
+            entry.bind(ev, lambda e: self.win.after(10, typed), add="+")
 
         def typed(e=None):
             choice.set("own")
@@ -1958,6 +1976,36 @@ def setup_display(root):
     w, h = min(int(1240 * scale), sw - 20), min(int(760 * scale), sh - 90)  # 작은 화면·큰 배율에서도 화면 안에
     root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 2 - 30)}")
     root.minsize(min(int(960 * scale), w), min(int(560 * scale), h))
+    edit_menu(root)
+
+
+def edit_menu(root):
+    """모든 입력 칸(한 줄·여러 줄)에서 오른쪽 클릭 → 잘라내기·복사·붙여넣기·모두 선택, Ctrl+A로 모두 선택."""
+    menu = tk.Menu(root, tearoff=0)
+    target = {}
+
+    def do(what):
+        w = target.get("w")
+        if not w:
+            return
+        if what == "all":
+            if isinstance(w, tk.Text):
+                w.tag_add("sel", "1.0", "end-1c")
+            else:
+                w.select_range(0, "end")
+                w.icursor("end")
+        else:
+            w.event_generate(what)
+    for label, what in (("잘라내기", "<<Cut>>"), ("복사", "<<Copy>>"), ("붙여넣기", "<<Paste>>"), (None, None), ("모두 선택", "all")):
+        menu.add_separator() if label is None else menu.add_command(label=label, command=lambda w=what: do(w))
+
+    def show(e):
+        target["w"] = e.widget
+        e.widget.focus_set()
+        menu.tk_popup(e.x_root, e.y_root)
+    for cls in ("TEntry", "Entry", "Text", "TCombobox"):
+        root.bind_class(cls, "<Button-3>", show, add="+")
+        root.bind_class(cls, "<Control-a>", lambda e: (target.update(w=e.widget), do("all"), "break")[-1], add="+")
 
 
 def main():

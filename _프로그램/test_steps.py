@@ -444,17 +444,34 @@ def test_auto_all_and_no_title_template():
         assert [r["상태"] for r in core.read_rows()] == [""] * 3 and not fake.updates
 
 
-def test_no_double_title_check():
-    """준비 화면에서 제목·그림을 정하고 최종 썸네일까지 만든 영상은 2. 자동 처리 때 제목을 다시 묻지 않는다."""
-    from PIL import Image
+def test_confirm_only_ready_order_and_exclude():
+    """썸네일이 없는 영상은 확인 창에도 안 뜨고 안 올라간다. 확인 창에서 뺀 영상은 안 올리고, 순서대로 예약 칸이 다시 배정된다."""
     with tempfile.TemporaryDirectory() as d:
         fake, ui = setup(d), UI()
-        folder = core.VIDEO_DIR / "b" / "명언"
-        Image.new("RGB", (1280, 720), "gray").save(folder / "1_자동썸네일.jpg")
-        core.save_prep(folder, {"1": {"선택": "재료/1/a.png", "제목": "준비 화면에서 고른 제목"}})
+        (core.VIDEO_DIR / "b" / "명언" / "3.jpg").unlink()  # 3번은 썸네일 없음
+        steps.build_excel(ui)
+        slots = sorted(r["예약일시"] for r in core.read_rows())
+        ui.review_titles = lambda rows: (setattr(ui, "reviewed", [r["파일"] for r in rows])
+                                         or {"b/명언/2.mp4": {"제목": "명언 2"}, "_순서": ["b/명언/2.mp4"]})
         steps.auto_all(ui)
-        assert ui.reviewed == ["명언 2", "명언 3"], ui.reviewed
-        assert any("이미 정한 1개" in m for m in ui.logs)
+        assert ui.reviewed == ["b/명언/1.mp4", "b/명언/2.mp4"], ui.reviewed
+        rows = {r["파일"]: r for r in core.read_rows()}
+        assert rows["b/명언/2.mp4"]["상태"] == "댓글완료"
+        assert rows["b/명언/1.mp4"]["상태"] == "" and rows["b/명언/3.mp4"]["상태"] == ""
+        assert rows["b/명언/2.mp4"]["예약일시"] == slots[0], (rows, slots)  # 고른 순서대로 첫 칸
+
+
+def test_removed_rows_stay_removed():
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        steps.build_excel(ui)
+        rows = core.read_rows()
+        rows[0]["상태"] = core.REMOVED
+        core.write_rows(rows)
+        steps.build_excel(ui)
+        assert core.read_rows()[0]["상태"] == core.REMOVED
+        steps.fill_all(ui)
+        assert core.read_rows()[0]["상태"] == core.REMOVED and "vid0" not in fake.thumbs
 
 
 def test_relogin_when_expired():
@@ -531,13 +548,17 @@ def test_auto_thumbnails_without_api_key():
         cfg = core.load_config()
         cfg["channels"][0]["thumb_auto"] = True
         core.save_config(cfg)
-        _material(d, (1, 2))  # 3번은 재료 사진 없음
-        ui.retitle = {"b/명언/1.mp4": {"썸네일문구": "첫 문구"}, "b/명언/2.mp4": {"썸네일문구": "고친 문구 / 둘째 줄"}}
+        _material(d, (1, 2))  # 3번은 재료 사진 없음 → 확인 창에도 안 뜨고 안 올림
+        steps.build_excel(ui)
+        rows = core.read_rows()
+        rows[0]["썸네일문구"], rows[1]["썸네일문구"] = "첫 문구", "둘 문구"
+        core.write_rows(rows)
+        ui.retitle = {"b/명언/2.mp4": {"썸네일문구": "고친 문구 / 둘째 줄"}}
         assert steps.auto_all(ui) is True
         rows = core.read_rows()
         assert [r["썸네일"] for r in rows[:2]] == ["b/명언/1_자동썸네일.jpg", "b/명언/2_자동썸네일.jpg"], rows
-        assert "재료" in rows[2]["오류"] and rows[1]["썸네일문구"] == "고친 문구 / 둘째 줄", rows[2]
-        assert ui.thumbs == ["b/명언/1_자동썸네일.jpg", "b/명언/2_자동썸네일.jpg"]
+        assert ui.reviewed == ["명언 1", "명언 2"] and rows[1]["썸네일문구"] == "고친 문구 / 둘째 줄", rows
+        assert ui.thumbs == ["b/명언/2_자동썸네일.jpg"]  # 확인 창에서 문구를 고친 것만 다시 보여 줌
         assert [r["상태"] for r in rows] == ["댓글완료", "댓글완료", ""] and fake.thumbs == ["vid0", "vid1"]
         from PIL import Image
         img = Image.open(core.VIDEO_DIR / rows[0]["썸네일"])

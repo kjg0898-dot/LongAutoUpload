@@ -83,20 +83,13 @@ class App:
         # 자주 안 쓰는 것은 '더보기'에 모은다
         more = ttk.Menubutton(top, text="더보기")
         menu = tk.Menu(more, tearoff=0)
-        for item in (("영상 폴더 열기", lambda: self.open_dir(core.VIDEO_DIR)), ("빈 묶음 폴더 만들기", self.make_batch),
-                          ("완료 폴더 열기", lambda: self.open_dir(core.DONE_DIR)),
-                          ("SEO 넣기 (파일 고르기)", self.import_seo), ("사진·썸네일 넣기", self.add_thumbs),
-                          ("작업표 열기", self.open_sheet),
-                          ("엑셀로 열기", self.open_excel), ("작업 기록 보기", lambda: self.open_dir(core.LOG_DIR)), None,
-                          ("목록(엑셀)만 다시 만들기", lambda: self.run(steps.build_excel)),
-                          ("정보·댓글만 넣기", lambda: self.run(steps.fill_all)), None,
-                          ("썸네일 시험 (실제 Claude)", self.thumb_test),
-                          ("댓글 답글 달기 (켠 채널만)", lambda: self.run(steps.reply_comments, "댓글 답글")), None,
-                          ("업데이트 확인", self.update), ("청소", self.clean_window)):
+        for item in (("영상 폴더 열기", lambda: self.open_dir(core.VIDEO_DIR)), ("완료 폴더 열기", lambda: self.open_dir(core.DONE_DIR)),
+                     ("엑셀로 열기", self.open_excel), ("작업 기록 보기", lambda: self.open_dir(core.LOG_DIR)), None,
+                     ("댓글 답글 달기 (켠 채널만)", lambda: self.run(steps.reply_comments, "댓글 답글"))):
             menu.add_separator() if item is None else menu.add_command(label=item[0], command=item[1])
         more["menu"] = menu
         more.pack(side="right", padx=2)
-        for text, cmd in (("안내", self.open_help), ("⚙ 설정", self.open_settings)):
+        for text, cmd in (("안내", self.open_help), ("업데이트", self.update), ("청소", self.clean_window), ("⚙ 설정", self.open_settings)):
             ttk.Button(top, text=text, command=cmd).pack(side="right", padx=2)
 
         body = ttk.PanedWindow(root, orient="horizontal")
@@ -165,6 +158,7 @@ class App:
         self.table.bind("<Double-1>", lambda e: self.edit_selected())
         self.table.bind("<Return>", lambda e: self.edit_selected())
         self.table.bind("<Button-3>", self.row_menu)
+        self.table.bind("<Delete>", self.remove_selected)
         ttk.Label(right, foreground=COLORS["muted"], text=(
             "더블클릭: 제목·예약일시 고치기  ·  오른쪽 클릭: Studio 열기·다시 하기·썸네일 없이 등\n"
             "색: 빨강=오류, 파랑=진행 중, 초록=완료, 주황=회원 직접설정")).pack(anchor="w", pady=(4, 0))
@@ -328,8 +322,8 @@ class App:
             if done:
                 app.later(app.pin_window)
             elif done is False and any(r["상태"] == "댓글완료" for r in core.read_rows()):
-                app.log("고정할 댓글이 없어 바로 4. 예약 걸기로 넘어갑니다.")
-                self.steps.schedule_all(app, confirmed=True)
+                app.log("고정할 댓글이 없어 4. 예약 걸기로 넘어갑니다.")
+                self.steps.schedule_all(app)
         self.run(work, "2. 자동 처리")
 
     def refresh_status(self):
@@ -356,7 +350,7 @@ class App:
     def fill_table(self):
         self.table.delete(*self.table.get_children())
         channel = self.channel_filter.get()
-        shown = [i for i, r in enumerate(self.rows) if channel in ("", "전체 채널", r["채널"])
+        shown = [i for i, r in enumerate(self.rows) if channel in ("", "전체 채널", r["채널"]) and r["상태"] != core.REMOVED
                  and (not self.only_problems.get() or r["오류"])]
         for i in shown:
             r = self.rows[i]
@@ -401,7 +395,19 @@ class App:
         can_redo = r["상태"] == "정보완료" or (r["상태"] == "" and r["오류"])
         menu.add_command(label="정보 넣기를 처음부터 다시", state="normal" if can_redo else "disabled",
                          command=lambda: self.change_row(index, {"상태": "", "오류": ""}))
+        menu.add_separator()
+        menu.add_command(label="목록에서 빼기 (Delete)", command=self.remove_selected)
         menu.tk_popup(event.x_root, event.y_root)
+
+    def remove_selected(self, event=None):
+        """멈춘 영상을 목록에서 뺀다 (다음 자동 처리에도 안 나옴). 이미 올리기 시작한 것은 YouTube에는 그대로."""
+        index, r = self.selected_row()
+        if r is None:
+            return
+        if not messagebox.askyesno("목록에서 빼기", f"[{r['채널']}] {Path(r['파일']).name}\n이 영상을 목록에서 뺄까요?\n"
+                                   "(YouTube 초안·영상은 지우지 않습니다. 다시 올리려면 엑셀에서 상태 칸을 비우세요)"):
+            return
+        self.change_row(index, {"상태": core.REMOVED, "오류": ""})
 
     def change_row(self, index, changes):
         if self.busy:
@@ -932,13 +938,9 @@ class PrepWindow:
         self.show_final(c)
 
     def choices(self, parent, c, key, values, pick, orig=""):
-        """SEO 후보를 한눈에 전부, 그 아래 원본(따로 한 줄), 직접 입력. 눌러서 고르면 바로 저장되고 고른 줄은 진하게."""
+        """SEO 후보·원본은 보기용 글자(끌어서 복사), 실제로 쓰이는 건 맨 아래 입력 칸 하나 (처음엔 SEO 추천)."""
         frame = ttk.Frame(parent)
-        current = c["item"][key]
-        var = c[key] = tk.StringVar(value=current)
-        opts = list(values) + ([orig] if orig and orig not in values else [])
-        choice = tk.StringVar(value=str(opts.index(current)) if current in opts else "own")
-        own = tk.StringVar(value="" if current in opts else current)
+        var = c[key] = tk.StringVar(value=c["item"][key])
         width = max(360, self.win.winfo_screenwidth() - self.FINAL - 460)
         limit = None
         if key == "썸네일문구":
@@ -949,61 +951,38 @@ class PrepWindow:
             if key == "제목":
                 return f"  ({len(text)}자)"
             n = len([s for s in text.split("/") if s.strip()])
-            return f"  ({n}줄 — 이 채널은 {limit}줄까지, 직접 입력에서 줄여주세요)" if limit and n > limit else ""
+            return f"  ({n}줄 — 이 채널은 {limit}줄까지)" if limit and n > limit else ""
 
-        def pick_value(v):
-            var.set(v)
-            self.save(c, key)
-
-        rows = {}
-
-        def option(n, v, tag, tag_style, at):
+        at = 0
+        for n, v in enumerate(values):
             row = ttk.Frame(frame)
             row.grid(row=at, column=0, sticky="w", pady=1)
-            ttk.Radiobutton(row, value=str(n), variable=choice, command=lambda: pick_value(v)).pack(side="left", anchor="n")
-            if tag:
-                ttk.Label(row, text=tag, style=tag_style, width=8).pack(side="left", anchor="n")
-            lab = selectable(row, v + note(v), width)  # 마우스로 끌어 고르고 Ctrl+C·오른쪽 클릭 → 복사
-            lab.pack(side="left", anchor="w")
-            lab.bind("<ButtonRelease-1>", lambda e: None if lab.tag_ranges("sel") else (choice.set(str(n)), pick_value(v)))
-            rows[str(n)] = lab
-
-        for n, v in enumerate(values):
-            option(n, v, "SEO 추천" if n == pick else f"SEO {n + 1}안", "Badge.TLabel" if n == pick else "Tag.TLabel", n)
-        at = len(values)
-        if len(opts) > len(values):  # 원본은 따로 떨어진 줄로
+            ttk.Label(row, text="SEO 추천" if n == pick else f"SEO {n + 1}안", style="Badge.TLabel" if n == pick else "Tag.TLabel",
+                      width=8).pack(side="left", anchor="n")
+            selectable(row, v + note(v), width).pack(side="left", anchor="w")
+            at += 1
+        if orig and orig not in values:
             ttk.Separator(frame).grid(row=at, column=0, sticky="ew", pady=4)
-            option(len(values), orig, "원본", "Orig.TLabel", at + 1)
+            row = ttk.Frame(frame)
+            row.grid(row=at + 1, column=0, sticky="w", pady=1)
+            ttk.Label(row, text="원본", style="Orig.TLabel", width=8).pack(side="left", anchor="n")
+            selectable(row, orig + note(orig), width).pack(side="left", anchor="w")
             at += 2
         row = ttk.Frame(frame)
-        row.grid(row=at, column=0, sticky="w", pady=(4, 0))
-        ttk.Radiobutton(row, value="own", variable=choice,
-                        command=lambda: own.get().strip() and pick_value(own.get().strip())).pack(side="left")
-        ttk.Label(row, text="직접 입력", style="Tag.TLabel", width=8).pack(side="left")
-        entry = ttk.Entry(row, textvariable=own, width=60 if key == "제목" else 40)
+        row.grid(row=at, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(row, text="쓸 문구 ▶", style="Picked.TLabel", width=9).pack(side="left")
+        entry = ttk.Entry(row, textvariable=var, width=70 if key == "제목" else 50, font=(FONT, 10, "bold"))
         entry.pack(side="left", padx=4)
-        size = ttk.Label(row, foreground=COLORS["muted"], text=note(own.get()) if own.get() else "")
+        size = ttk.Label(row, foreground=COLORS["muted"], text=note(var.get()))
         size.pack(side="left")
-        for ev in ("<<Paste>>", "<<Cut>>"):  # 붙여넣기·잘라내기도 바로 반영
-            entry.bind(ev, lambda e: self.win.after(10, typed), add="+")
-
-        def typed(e=None):
-            choice.set("own")
-            var.set(own.get().strip())
-            size.config(text=note(own.get().strip()) if own.get().strip() else "")
-        entry.bind("<KeyRelease>", typed)
+        var.trace_add("write", lambda *a: size.config(text=note(var.get().strip())))
         for ev in ("<FocusOut>", "<Return>"):
-            entry.bind(ev, lambda e: own.get().strip() and self.save(c, key))
-        if key == "썸네일문구":
-            ttk.Label(frame, foreground=COLORS["muted"], text="/ 를 넣으면 거기서 줄이 바뀝니다 (예: 진짜 죽음은 / 등 뒤에 있었다)").grid(
-                row=at + 1, column=0, sticky="w", pady=(2, 0))
-
-        def mark(*_):  # 고른 줄은 진하게
-            for k, lab in rows.items():
-                picked = k == choice.get()
-                lab.config(font=(FONT, 10, "bold") if picked else (FONT, 10), foreground="#0B4F9C" if picked else "black")
-        choice.trace_add("write", mark)
-        mark()
+            entry.bind(ev, lambda e: var.get().strip() and self.save(c, key))
+        for ev in ("<<Paste>>", "<<Cut>>"):  # 붙여넣으면 바로 저장
+            entry.bind(ev, lambda e: self.win.after(10, lambda: var.get().strip() and self.save(c, key)), add="+")
+        ttk.Label(frame, foreground=COLORS["muted"], text=(
+            "위 후보는 끌어서 복사 → '쓸 문구' 칸에 붙여넣기. 이 칸의 글자가 그대로 쓰입니다"
+            + (" (/ 를 넣으면 거기서 줄이 바뀜)" if key == "썸네일문구" else ""))).grid(row=at + 1, column=0, sticky="w", pady=(2, 0))
         return frame
 
     def show_pics(self, c):
@@ -1490,52 +1469,71 @@ class ReplyReview:
 
 
 class TitleReview:
-    """2. 자동 처리 중: 새 영상들의 제목(과 썸네일 자동 만들기 채널은 썸네일 문구)을 한 화면에서 고르거나 고친다."""
+    """2. 자동 처리 중 확인 창: 올릴 영상마다 최종 썸네일·제목·썸네일 문구. 체크를 빼면 이번에 안 올리고, ▲▼로 순서(=공개 순서)."""
 
     def __init__(self, app, rows, done):
-        app.title_review, self.rows, self.done = self, rows, done
+        app.title_review, self.rows, self.done = self, list(rows), done
         auto = {c["name"] for c in core.load_config()["channels"] if c["thumb_auto"]}
         win = self.win = tk.Toplevel(app.root)
-        win.title("제목 확인")
+        win.title("올리기 전 확인")
         win.transient(app.root)
         win.grab_set()
         win.protocol("WM_DELETE_WINDOW", self.cancel)
         ttk.Label(win, padding=(12, 10, 12, 4), text=(
-            f"새 영상 {len(rows)}개 — 제목을 ▾에서 고르거나 직접 고치세요. 처음 값은 SEO 추천입니다."
-            + ("\n썸네일 문구는 / 로 줄을 나눕니다. 이 문구로 썸네일을 자동으로 만듭니다." if auto else ""))).pack(anchor="w")
-        inner = scroll_area(win)
-        self.vars, self.images = {}, []
-        for i, r in enumerate(rows):
+            f"올릴 영상 {len(rows)}개 — 이 썸네일·제목으로 올립니다. 칸에 든 글자가 그대로 쓰입니다 (붙여넣어 바꾸면 됨).\n"
+            "체크를 빼면 이번에 안 올리고, ▲▼로 순서를 바꾸면 그 순서대로 공개 시간이 정해집니다."
+            + ("  썸네일 문구는 / 로 줄을 나눕니다 (바꾸면 썸네일을 새로 만들어 보여줌)." if auto else ""))).pack(anchor="w")
+        self.inner = scroll_area(win)
+        self.vars, self.images, self.on, self.frames = {}, [], {}, {}
+        for r in self.rows:
             is_auto = r["채널"] in auto
-            pic = core.material(r) if is_auto else (
-                core.VIDEO_DIR / r["썸네일"] if r["썸네일"] not in ("", "없음") else None)
-            img = photo_image(pic, 170) if pic else None
+            box = self.frames[r["파일"]] = ttk.Frame(self.inner, padding=6, relief="groove")
+            self.on[r["파일"]] = tk.BooleanVar(value=True)
+            ctl = ttk.Frame(box)
+            ctl.grid(row=0, column=0, rowspan=3, sticky="n", padx=(0, 6))
+            ttk.Checkbutton(ctl, text="올리기", variable=self.on[r["파일"]]).pack(anchor="w")
+            ttk.Button(ctl, text="▲", width=3, command=lambda f=r["파일"]: self.move(f, -1)).pack(pady=(6, 0))
+            ttk.Button(ctl, text="▼", width=3, command=lambda f=r["파일"]: self.move(f, 1)).pack()
+            final = core.VIDEO_DIR / r["썸네일"] if r["썸네일"] not in ("", "없음") else None
+            pic = final if final and final.exists() else (core.material(r) if is_auto else None)
+            img = photo_image(pic, 240) if pic else None
             if img:
                 self.images.append(img)  # 참조를 남겨야 그림이 사라지지 않는다
-            (tk.Label(inner, image=img) if img else ttk.Label(
-                inner, width=24, foreground=COLORS["muted"], wraplength=170,
-                text=Path(pic).name if pic else ("재료 사진 없음" if is_auto else "썸네일 없음"))).grid(
-                row=3 * i, column=0, rowspan=3, sticky="nw", padx=(0, 10), pady=6)
-            ttk.Label(inner, foreground=COLORS["muted"], text=f"[{r['채널']}] {Path(r['파일']).name}").grid(
-                row=3 * i, column=1, columnspan=3, sticky="sw", pady=(6, 0))
-            fields = {"제목": "제목후보"} | ({"썸네일문구": "썸네일문구후보"} if is_auto else {})
+                lab = tk.Label(box, image=img, cursor="hand2")
+                lab.bind("<Button-1>", lambda e, p=pic: view_image(self.win, p, Path(p).name))
+            else:
+                lab = ttk.Label(box, width=30, foreground=COLORS["muted"], text="썸네일 없이 올림" if r["썸네일"] == "없음" else "썸네일 없음")
+            lab.grid(row=0, column=1, rowspan=3, sticky="nw", padx=(0, 10))
+            ttk.Label(box, foreground=COLORS["muted"], text=f"[{r['채널']}] {Path(r['파일']).name}   공개 {r['예약일시']}").grid(
+                row=0, column=2, columnspan=3, sticky="w")
             self.vars[r["파일"]] = {}
-            for j, (key, cands) in enumerate(fields.items(), 1):
-                ttk.Label(inner, text="제목" if key == "제목" else "썸네일 문구", foreground=COLORS["muted"]).grid(
-                    row=3 * i + j, column=1, sticky="nw", padx=(0, 6))
+            for j, key in enumerate(["제목"] + (["썸네일문구"] if is_auto else []), 1):
+                ttk.Label(box, text="제목" if key == "제목" else "썸네일 문구", foreground=COLORS["muted"]).grid(
+                    row=j, column=2, sticky="w", padx=(0, 6))
                 var = self.vars[r["파일"]][key] = tk.StringVar(value=r[key])
-                ttk.Combobox(inner, textvariable=var, width=64, values=candidates(r[cands])).grid(
-                    row=3 * i + j, column=2, sticky="nw")
+                ttk.Entry(box, textvariable=var, width=70).grid(row=j, column=3, sticky="w", pady=2)
                 if key == "제목":
-                    length = ttk.Label(inner, width=12)
-                    length.grid(row=3 * i + j, column=3, sticky="nw", padx=6)
+                    length = ttk.Label(box, width=12)
+                    length.grid(row=j, column=4, sticky="w", padx=6)
                     var.trace_add("write", lambda *a, v=var, w=length: self.show_length(v, w))
                     self.show_length(var, length)
+        self.place()
         buttons = ttk.Frame(win, padding=12)
         buttons.pack(fill="x")
-        ttk.Button(buttons, text="이대로 진행 ▶", command=self.ok).pack(side="right")
+        ttk.Button(buttons, text="이대로 올리기 ▶", style="Primary.TButton", command=self.ok).pack(side="right")
         ttk.Button(buttons, text="취소", command=self.cancel).pack(side="right", padx=6)
         fit(win)
+
+    def place(self):
+        for i, r in enumerate(self.rows):
+            self.frames[r["파일"]].grid(row=i, column=0, sticky="ew", pady=3)
+
+    def move(self, f, d):
+        i = next(k for k, r in enumerate(self.rows) if r["파일"] == f)
+        j = i + d
+        if 0 <= j < len(self.rows):
+            self.rows[i], self.rows[j] = self.rows[j], self.rows[i]
+            self.place()
 
     @staticmethod
     def show_length(var, label):
@@ -1544,11 +1542,14 @@ class TitleReview:
                      foreground=COLORS["accent"] if n > 68 else COLORS["muted"])
 
     def ok(self):
-        picked = {f: {k: v.get().strip() for k, v in d.items()} for f, d in self.vars.items()}
+        files = [r["파일"] for r in self.rows if self.on[r["파일"]].get()]
+        if not files:
+            return messagebox.showerror("올리기 전 확인", "올릴 영상을 하나 이상 체크해 주세요.", parent=self.win)
+        picked = {f: {k: v.get().strip() for k, v in self.vars[f].items()} for f in files}
         bad = [Path(f).name for f, d in picked.items() if any(not v or "\n" in v for v in d.values())]
         if bad:
-            return messagebox.showerror("제목 확인", "제목이나 썸네일 문구가 비어 있습니다:\n" + "\n".join(bad), parent=self.win)
-        self.finish(picked)
+            return messagebox.showerror("올리기 전 확인", "제목이나 썸네일 문구가 비어 있습니다:\n" + "\n".join(bad), parent=self.win)
+        self.finish(picked | {"_순서": files})
 
     def cancel(self):
         self.finish(None)
@@ -2042,6 +2043,7 @@ def setup_display(root):
     w, h = min(int(1240 * scale), sw - 20), min(int(760 * scale), sh - 90)  # 작은 화면·큰 배율에서도 화면 안에
     root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 2 - 30)}")
     root.minsize(min(int(960 * scale), w), min(int(560 * scale), h))
+    ttk.Style(root).configure("Primary.TButton", font=(FONT, 10, "bold"))
     edit_menu(root)
 
 

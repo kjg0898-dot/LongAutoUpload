@@ -169,7 +169,7 @@ def card_status(rows, has_videos=False):
     member, left = c[core.MEMBER_TODO], c[""] + c["정보완료"]
     text = {
         "1": f"이번 묶음 영상 {len(rows)}개" if rows else "SEO·그림 폴더를 이 창에 끌어다 놓기 → 준비 화면에서 고르고\n'전부 만들고 올리기' (영상은 Studio에 초안으로)",
-        "2": (f"남은 {left}개" if left else "완료" if rows else "목록 → 제목 확인 → 제목·설명·썸네일·댓글")
+        "2": (f"남은 {left}개" if left else "완료" if rows else "목록 → 올리기 전 확인 → 제목·설명·썸네일·댓글")
              + (f" · 오류 {errors}" if errors else ""),
         "3": f"고정할 영상 {c['댓글완료']}개" if c["댓글완료"] else "탭을 열어 댓글 고정 (직접)",
         "4": (f"예약할 영상 {c['댓글완료']}개" if c["댓글완료"] else "예약 + 완료 폴더로 이동")
@@ -290,9 +290,10 @@ def _compose(ch, r, original):
     return {"title": title, "description": desc, "tags": tags} | snippet_over, status_over | {"privacyStatus": "unlisted"}
 
 
-def fill_all(ui):
+def fill_all(ui, only=None):
+    """only: 이 파일들만 (2. 자동 처리의 확인 창에서 고른 것)."""
     cfg, rows = core.load_config(), _load(ui)
-    todo_all = [r for r in rows if r["상태"] in ("", "정보완료")]
+    todo_all = [r for r in rows if r["상태"] in ("", "정보완료") and (only is None or r["파일"] in only)]
     if not todo_all:
         if any(r["상태"] == "댓글완료" for r in rows):
             return ui.log("정보·댓글은 모두 넣었습니다 → 3. 댓글 고정")
@@ -372,32 +373,67 @@ def open_tabs(urls):
         webbrowser.open_new_tab(u)
 
 
-# ---------- 2. 자동 처리 (목록 → 제목 확인 → 정보·댓글, 그다음 고정 창) ----------
+# ---------- 2. 자동 처리 (목록 → 올리기 전 확인 → 정보·댓글, 그다음 고정 창) ----------
+def ready(r, auto):
+    """올릴 준비가 다 된 영상: 썸네일 자동 채널은 고른 그림이 있고, 아니면 썸네일 파일이 있음 ('없음'은 썸네일 없이)."""
+    if r["썸네일"] == "없음":
+        return True
+    if r["채널"] in auto:
+        return bool(core.material(r))
+    return bool(r["썸네일"]) and (core.VIDEO_DIR / r["썸네일"]).exists()
+
+
 def auto_all(ui):
+    """2. 자동 처리: 목록 → (준비가 다 된 영상만) 최종 썸네일 → 확인 창(최종 썸네일·제목·썸네일 문구, 고르기·순서) →
+    문구를 고친 것만 썸네일 다시 → 정보·댓글. 고정할 댓글이 있으면 True."""
     build_excel(ui)
     rows = core.read_rows()
+    auto = {c["name"] for c in core.load_config()["channels"] if c["thumb_auto"]}
     new = [r for r in rows if r["상태"] == ""]
-    ask = [r for r in new if not settled(r)]  # 준비 화면에서 제목·최종 썸네일까지 정한 영상은 다시 묻지 않음
-    if len(ask) < len(new):
-        ui.log(f"준비 화면에서 이미 정한 {len(new) - len(ask)}개는 제목을 다시 묻지 않습니다.")
-    if new:  # 썸네일을 보며 제목(과 썸네일 문구)을 고르는 창. 처음 값은 SEO 추천
-        picked = ui.review_titles(ask) if ask else {}
-        if picked is None:
-            return ui.log("제목 확인을 취소했습니다. '2. 자동 처리'를 다시 누르면 이어서 합니다.")
-        changed = [(r, k, v) for r in new for k, v in picked.get(r["파일"], {}).items() if r[k] != v]
-        for r, k, v in changed:
-            r[k] = v
-            if core.row_num(r) is not None:  # 준비 화면과 같게 (다시 만들 때 고친 값이 되돌아가지 않게)
-                remember((core.VIDEO_DIR / r["파일"]).parent, core.row_num(r), **{k: v})
-        if changed:
-            _save(ui, rows)
-        auto = {c["name"] for c in core.load_config()["channels"] if c["thumb_auto"]}
-        targets = [r for r in new if r["채널"] in auto]
+    go = [r for r in new if ready(r, auto)]
+    if len(go) < len(new):
+        ui.log(f"그림·썸네일이 없는 {len(new) - len(go)}개는 이번에 올리지 않습니다: "
+               + ", ".join(Path(r["파일"]).name for r in new if r not in go))
+    only = {r["파일"] for r in rows if r["상태"] == "정보완료"}  # 하다 멈춘 것은 이어서
+    if go:
+        targets = [r for r in go if r["채널"] in auto]
         if targets:
-            made = make_thumbnails(ui, rows, targets)  # 준비 화면에서 이미 만든 것은 그대로라 다시 안 보여줌
+            make_thumbnails(ui, rows, targets)  # 준비 화면에서 이미 만든 것은 그대로
+            go = [r for r in go if not (r["채널"] in auto and r["오류"])]
+        if not go:
+            return ui.log("최종 썸네일을 만들지 못해 올릴 영상이 없습니다. 목록의 빨간 줄을 확인하세요.")
+        picked = ui.review_titles(go)  # 최종 썸네일을 보며 제목·썸네일 문구 확인, 올릴 것 고르기·순서
+        if picked is None:
+            return ui.log("확인 창을 취소했습니다. '2. 자동 처리'를 다시 누르면 이어서 합니다.")
+        order = picked.pop("_순서", [r["파일"] for r in go])
+        by_file = {r["파일"]: r for r in go}
+        chosen = [by_file[f] for f in order if f in by_file]
+        retext = []
+        for r in chosen:
+            for k, v in picked.get(r["파일"], {}).items():
+                if r[k] != v:
+                    r[k] = v
+                    if k == "썸네일문구":
+                        retext.append(r)
+                    if core.row_num(r) is not None:  # 준비 화면과 같게 (다시 만들 때 고친 값이 되돌아가지 않게)
+                        remember((core.VIDEO_DIR / r["파일"]).parent, core.row_num(r), **{k: v})
+        for name in {r["채널"] for r in go}:  # 바꾼 순서대로 공개 시간 (뺀 영상은 뒤로)
+            group = [r for r in go if r["채널"] == name]
+            first = [r for r in chosen if r["채널"] == name]
+            slots = sorted(((r["예약일시"], r["회원우선"]) for r in group), key=lambda s: s[0])
+            for r, (when, member) in zip(first + [r for r in group if r not in first], slots):
+                r["예약일시"], r["회원우선"] = when, member
+        _save(ui, rows)
+        if len(chosen) < len(go):
+            ui.log(f"확인 창에서 뺀 {len(go) - len(chosen)}개는 이번에 올리지 않습니다.")
+        if retext:  # 확인 창에서 썸네일 문구를 고친 것만 다시 만들고 보여줌
+            made = make_thumbnails(ui, rows, retext)
             if made and not ui.review_thumbs(made):
-                return ui.log("썸네일 확인을 취소했습니다. 문구를 고친 뒤 '2. 자동 처리'를 다시 누르세요.")
-    fill_all(ui)
+                return ui.log("썸네일 확인을 취소했습니다. '2. 자동 처리'를 다시 누르세요.")
+        only |= {r["파일"] for r in chosen}
+    elif not only:
+        return ui.log("올릴 영상이 없습니다. 준비 화면에서 그림을 넣고 영상은 Studio에 초안으로 올려 주세요.")
+    fill_all(ui, only=only)
     update_ctr(ui)
     if any(c.get("reply", "끔") != "끔" for c in core.load_config()["channels"]):
         reply_comments(ui)
@@ -523,15 +559,6 @@ def update_ctr(ui):
                 return
             else:
                 ui.log(f"[{ch['name']}] (썸네일 클릭률을 못 받았습니다: {why})")
-
-
-def settled(r):
-    """준비 화면에서 제목·썸네일 문구를 정하고 최종 썸네일까지 만든 영상인지 (그러면 자동 처리 때 다시 묻지 않음)."""
-    num = core.row_num(r)
-    if num is None or not r["파일"]:
-        return False
-    folder = (core.VIDEO_DIR / r["파일"]).parent
-    return (folder / f"{num}_자동썸네일.jpg").exists() and bool(core.load_prep(folder).get(str(num), {}).get("선택"))
 
 
 def make_thumbnails(ui, rows, targets, force=False):

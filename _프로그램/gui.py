@@ -795,7 +795,6 @@ class PrepWindow:
         style.configure("Tag.TLabel", font=(FONT, 9), foreground=COLORS["muted"])
         style.configure("Orig.TLabel", font=(FONT, 9, "bold"), foreground="#8A5A00")
         style.configure("Primary.TButton", font=(FONT, 10, "bold"))
-        style.configure("Small.TButton", font=(FONT, 8), padding=(2, 0))
         top = ttk.Frame(win, padding=(12, 10, 12, 4))
         top.pack(fill="x")
         ttk.Label(top, justify="left", text=(
@@ -916,7 +915,7 @@ class PrepWindow:
         opts = list(values) + ([orig] if orig and orig not in values else [])
         choice = tk.StringVar(value=str(opts.index(current)) if current in opts else "own")
         own = tk.StringVar(value="" if current in opts else current)
-        width = max(320, self.win.winfo_screenwidth() - self.FINAL - 600)  # 오른쪽에 고쳐 쓰기·복사 버튼 자리
+        width = max(360, self.win.winfo_screenwidth() - self.FINAL - 460)
         limit = None
         if key == "썸네일문구":
             import thumbs
@@ -934,13 +933,6 @@ class PrepWindow:
 
         rows = {}
 
-        def rewrite(v):  # 이 문구를 직접 입력 칸에 넣고 바로 고치게
-            own.set(v)
-            typed()
-            entry.focus_set()
-            entry.icursor("end")
-            self.save(c, key)
-
         def option(n, v, tag, tag_style, at):
             row = ttk.Frame(frame)
             row.grid(row=at, column=0, sticky="w", pady=1)
@@ -950,7 +942,6 @@ class PrepWindow:
             lab = selectable(row, v + note(v), width)  # 마우스로 끌어 고르고 Ctrl+C·오른쪽 클릭 → 복사
             lab.pack(side="left", anchor="w")
             lab.bind("<ButtonRelease-1>", lambda e: None if lab.tag_ranges("sel") else (choice.set(str(n)), pick_value(v)))
-            ttk.Button(row, text="고쳐 쓰기", style="Small.TButton", command=lambda: rewrite(v)).pack(side="left", padx=(8, 0), anchor="n")
             rows[str(n)] = lab
 
         for n, v in enumerate(values):

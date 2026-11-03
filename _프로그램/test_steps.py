@@ -905,6 +905,26 @@ def test_photo_position():
         assert out.info["layout"]["name"] != "아래_가운데", out.info["layout"]["name"]
 
 
+def test_line_limits_per_layout():
+    """세계전쟁사: 2줄은 어디든, 3줄은 채널이 실제로 3줄을 쓴 오른쪽 위 자리로 (작은 화면에서도 읽히는 크기), 4줄은 안내."""
+    import random
+    import thumbs
+    from PIL import Image
+    thumbs.TEMPLATE_DIR = Path(__file__).parent / "썸네일틀"
+    ch = {**core.DEFAULT_CHANNEL, "name": "세계전쟁사", "folder": "세계전쟁사"}
+    base = Image.new("RGB", (1600, 900), (40, 60, 80))
+    assert thumbs.max_lines(thumbs.load_template(ch)) == 3
+    lay = thumbs.compose(ch, base, "후궁 0명, / 조선 역사상 / 가장 영리했던 왕", {"layout": "아래_가운데"}, None, random.Random(0)).info["layout"]
+    assert lay["name"] == "오른쪽_위" and len(lay["lines"]) == 3 and lay["glyph"] >= 90, lay
+    assert thumbs.compose(ch, base, "300발 쏴야 / 겨우 1명", {"layout": "아래_가운데"}, None, random.Random(0)).info["layout"]["name"] == "아래_가운데"
+    try:
+        thumbs.compose(ch, base, "가 / 나 / 다 / 라", None, None, random.Random(0))
+        raise AssertionError("4줄을 그냥 넘김")
+    except ValueError as e:
+        assert "3줄까지" in str(e)
+    assert "최대 3줄" in dict(thumbs.options(ch, thumbs.load_template(ch))["layouts"])["오른쪽_위"]
+
+
 def test_ai_request_and_commons_filter():
     """Claude 요청 형식(모델·구조화 출력·거절 시 다른 모델), 거절 처리, 위키미디어 저작권 거르기."""
     import io as _io

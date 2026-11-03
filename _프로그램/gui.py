@@ -899,8 +899,16 @@ class PrepWindow:
         own = tk.StringVar(value="" if current in values else current)
         width = max(360, self.win.winfo_screenwidth() - self.FINAL - 420)
 
+        limit = None
+        if key == "썸네일문구":
+            import thumbs
+            limit = thumbs.max_lines(thumbs.load_template(c["ch"]))
+
         def count(text):
-            return f"  ({len(text)}자)" if key == "제목" else ""
+            if key == "제목":
+                return f"  ({len(text)}자)"
+            n = len([s for s in text.split("/") if s.strip()])
+            return f"  ({n}줄 — 이 채널은 {limit}줄까지, 직접 입력에서 줄여주세요)" if limit and n > limit else ""
 
         def pick_value(v):
             var.set(v)

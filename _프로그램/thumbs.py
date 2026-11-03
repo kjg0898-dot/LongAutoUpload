@@ -280,6 +280,11 @@ def _scaled(tpl, s):
     return tpl
 
 
+def max_lines(tpl):
+    """이 틀에서 쓸 수 있는 문구 줄 수 (글자 자리마다 다르면 가장 많은 것)."""
+    return max([tpl["text"]["max_lines"]] + [x.get("max_lines", 0) for x in tpl.get("layouts") or []])
+
+
 def _box_xyxy(box):
     x, y, w, h = box
     return (x, y, x + w, y + h)
@@ -348,10 +353,11 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None, scale=1):
     if plan.get("lines") and _squash(plan["lines"]) == _squash(lines) and _even(plan["lines"]) >= min(_even(lines), 0.6):
         # Claude가 나눈 줄: 글자는 그대로이고, 한 줄만 너무 짧지 않을 때만
         lines = [s.strip() for s in plan["lines"] if s.strip()]
-    if len(lines) > t["max_lines"]:
-        raise ValueError(f"썸네일 문구가 {len(lines)}줄입니다 (이 채널은 {t['max_lines']}줄까지).")
+    if len(lines) > max_lines(tpl):
+        raise ValueError(f"썸네일 문구가 {len(lines)}줄입니다 (이 채널은 {max_lines(tpl)}줄까지).")
     layouts, spots_ok = tpl.get("layouts"), None
     if layouts:  # 글자 자리가 여럿인 틀: Claude가 고른 자리, 없으면 앞서 쓴 자리를 피해 무게대로
+        layouts = [x for x in layouts if len(lines) <= x.get("max_lines", t["max_lines"])]  # 이 줄 수를 넣을 수 있는 자리만
         lay = next((x for x in layouts if x["name"] == plan.get("layout")), None)
         if not lay:
             pool = [x for x in layouts if x["name"] not in plan.get("avoid", [])] or layouts
@@ -364,7 +370,7 @@ def compose(ch, base, text, plan=None, photo=None, rnd=None, scale=1):
                     max(0, min(bx[1] + bx[3], pb[1] + pb[3]) - max(bx[1], pb[1])) / max(1, pb[2] * pb[3])
             if over(lay) > 0.35:
                 lay = min(layouts, key=over)
-        t.update({k: lay[k] for k in ("box", "valign") if k in lay})
+        t.update({k: lay[k] for k in ("box", "valign", "max_lines") if k in lay})
         t["sides"], spots_ok = [lay.get("align", "center")], lay.get("spots")
         plan = plan | {"side": t["sides"][0], "layout": lay["name"]}
     if isinstance(plan.get("size"), (int, float)):  # 글자 크기 조금씩 (0.85~1.1배)
@@ -729,14 +735,15 @@ def options(ch, tpl, ratio=None):
     def spot_text(i, s):
         name, region, anchor = _spot(s, i)
         return f"{name} {region}" + (f" → 이 사진은 약 {_place(region, anchor, ratio, 0.95)}" if ratio else "")
-    out = {"sides": tpl["text"]["sides"], "max_lines": tpl["text"]["max_lines"],
+    out = {"sides": tpl["text"]["sides"], "max_lines": max_lines(tpl),
            "spots": [spot_text(i, s) for i, s in enumerate(_spots(tpl))],
            "fonts": sorted({p.name for p in fonts(ch, tpl)}),
            "font_notes": {p.name: FONT_NOTES.get(p.name, "이 PC에 설치된 굵은 글꼴") for p in fonts(ch, tpl)},
            "styles": [s.get("_설명") or f"줄 색 {s.get('line_fills') or s.get('fill')}, 강조 {s.get('accent')}" for s in tpl["styles"]]}
     if tpl.get("layouts"):
         total = sum(x.get("weight", 1) for x in tpl["layouts"])
-        out["layouts"] = [(x["name"], x.get("_설명", "") + f" (이 채널에서 약 {x.get('weight', 1) / total:.0%}, 글자 칸 폭 {x['box'][2]}px)"
+        out["layouts"] = [(x["name"], x.get("_설명", "") + f" (이 채널에서 약 {x.get('weight', 1) / total:.0%}, 글자 칸 폭 {x['box'][2]}px, "
+                                      f"최대 {x.get('max_lines', tpl['text']['max_lines'])}줄)"
                            + (f" (사진 자리 {x['spots']}번만)" if x.get("spots") is not None else ""))
                           for x in tpl["layouts"]]
     return out

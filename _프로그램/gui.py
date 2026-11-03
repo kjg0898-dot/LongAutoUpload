@@ -786,6 +786,15 @@ class PrepWindow:
         self.FINAL = max(220, min(320, int(room * 0.24)))
         self.PREVIEW = max(110, min(200, int((room - self.FINAL - 170) / 4.3)))
         win.title("준비 — 후보 그림·제목·썸네일 문구")
+        style = ttk.Style(win)  # 구역 제목·고른 항목이 눈에 띄게
+        style.configure("Card.TLabelframe.Label", font=(FONT, 12, "bold"), foreground="#1F3A5F")
+        style.configure("Section.TLabelframe.Label", font=(FONT, 10, "bold"), foreground="#1F3A5F")
+        style.configure("Opt.TLabel", font=(FONT, 10))
+        style.configure("Picked.TLabel", font=(FONT, 10, "bold"), foreground="#0B4F9C")
+        style.configure("Badge.TLabel", font=(FONT, 9, "bold"), foreground="#2E7D32")
+        style.configure("Tag.TLabel", font=(FONT, 9), foreground=COLORS["muted"])
+        style.configure("Orig.TLabel", font=(FONT, 9, "bold"), foreground="#8A5A00")
+        style.configure("Primary.TButton", font=(FONT, 10, "bold"))
         top = ttk.Frame(win, padding=(12, 10, 12, 4))
         top.pack(fill="x")
         ttk.Label(top, justify="left", text=(
@@ -830,7 +839,8 @@ class PrepWindow:
             win.dnd_bind("<<Drop>>", lambda e: (self.drop(win.tk.splitlist(e.data), e.x_root, e.y_root), e.action)[1])
         except Exception:
             pass
-        fit(win)
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()  # 준비 화면은 늘 화면 가득 (그림이 늦게 그려져도 화면 밖으로 안 나가게)
+        win.geometry(f"{sw - 40}x{sh - 90}+20+10")
         self.find_photos()
         self.recommend()
 
@@ -840,71 +850,78 @@ class PrepWindow:
 
     # --- 영상 칸 하나 ---
     def card(self, parent, ch, folder, item, i):
+        """영상 한 편 = 한 칸. 왼쪽: ① 후보 그림 ② 제목 ③ 썸네일 문구 (설명·고정 댓글은 접어 둠), 오른쪽: ④ 최종 썸네일."""
         num = item["num"]
-        box = ttk.LabelFrame(parent, text=f" {num}. {item['orig']} ", padding=8)
-        box.grid(row=i, column=0, sticky="ew", pady=4, padx=2)
+        box = ttk.LabelFrame(parent, text=f"  {num}번 영상  ", padding=10, style="Card.TLabelframe")
+        box.grid(row=i, column=0, sticky="ew", pady=(10, 4), padx=4)
         c = self.cards[(ch["name"], num)] = {"ch": ch, "folder": folder, "item": item, "box": box}
-        pics = c["pics"] = ttk.Frame(box)
-        pics.grid(row=0, column=0, columnspan=2, sticky="w")
-        side = ttk.Frame(box)
-        side.grid(row=0, column=2, rowspan=4, sticky="ne", padx=(10, 0))
-        c["final"] = tk.Label(side, text="최종 썸네일 아직 없음", width=40, height=9, relief="groove")
-        c["final"].pack()
-        bar = ttk.Frame(side)
-        bar.pack(fill="x", pady=(4, 0))
-        if ch["thumb_auto"]:
-            ttk.Button(bar, text="최종 만들기", command=lambda: self.make(c, force=True)).pack(side="right")
-            ttk.Button(bar, text="실제 사진 다시 찾기", command=lambda: self.find_photos([c], force=True)).pack(side="right", padx=4)
-            bar2 = ttk.Frame(side)
-            bar2.pack(fill="x", pady=(4, 0))
-            ttk.Button(bar2, text="사진 위치·크기", command=lambda: self.place_photo(c)).pack(side="right")
-            ttk.Button(bar2, text="실제 사진 크게 보기", command=lambda: self.view_photo(c)).pack(side="right", padx=4)
-        c["final"].bind("<Button-1>", lambda e: c["item"]["최종"] and view_image(self.win, c["item"]["최종"], f"{c['item']['num']}번 최종 썸네일"))
-        c["final"].config(cursor="hand2")
-        c["photo_note"] = ttk.Label(side, foreground=COLORS["muted"], wraplength=self.FINAL)
-        c["photo_note"].pack(anchor="w")
-        c["err"] = ttk.Label(side, foreground=COLORS["accent"], wraplength=self.FINAL)
-        c["err"].pack(anchor="w")
-        c["score"] = ttk.Label(side, justify="left", wraplength=self.FINAL)
-        c["score"].pack(anchor="w")
-        for j, (key, label, values, pick, orig) in enumerate((
-                ("제목", "제목", item["titles"], item.get("title_pick", 0), item["orig"]),
-                ("썸네일문구", "썸네일 문구", item["thumb_texts"], item.get("thumb_pick", 0), item.get("orig_thumb", ""))), 1):
-            ttk.Label(box, text=label, foreground=COLORS["muted"]).grid(row=j, column=0, sticky="nw", padx=(0, 6), pady=(4, 0))
-            self.choices(box, c, key, values, pick, orig).grid(row=j, column=1, sticky="w", pady=2)
-        more = ttk.Frame(box)
-        toggle = ttk.Button(box, text="설명·고정 댓글 ▸")
-        toggle.grid(row=3, column=1, sticky="w", pady=(4, 0))
+        left = ttk.Frame(box)
+        left.grid(row=0, column=0, sticky="nw")
+        side = ttk.LabelFrame(box, text=" ④ 최종 썸네일 ", padding=8, style="Section.TLabelframe")
+        side.grid(row=0, column=1, sticky="ne", padx=(14, 0))
+
+        sec = ttk.LabelFrame(left, text=" ① 후보 그림 — 눌러서 고르기 (빨간 테두리 = 고른 것) ", padding=6, style="Section.TLabelframe")
+        sec.grid(row=0, column=0, sticky="ew")
+        c["pics"] = ttk.Frame(sec)
+        c["pics"].pack(anchor="w")
+        for row, (key, label, values, pick, orig) in enumerate((
+                ("제목", " ② 제목 ", item["titles"], item.get("title_pick", 0), item["orig"]),
+                ("썸네일문구", " ③ 썸네일 문구 ", item["thumb_texts"], item.get("thumb_pick", 0), item.get("orig_thumb", ""))), 1):
+            sec = ttk.LabelFrame(left, text=label, padding=6, style="Section.TLabelframe")
+            sec.grid(row=row, column=0, sticky="ew", pady=(8, 0))
+            self.choices(sec, c, key, values, pick, orig).pack(anchor="w")
+
+        more = ttk.Frame(left)
+        toggle = ttk.Button(left, text="설명·고정 댓글 보기 ▸")
+        toggle.grid(row=3, column=0, sticky="w", pady=(8, 0))
         for k, (key, h) in enumerate((("설명", 6), ("고정댓글", 4))):
-            ttk.Label(more, text="설명" if key == "설명" else "고정 댓글", foreground=COLORS["muted"]).grid(row=k, column=0, sticky="nw")
+            ttk.Label(more, text="설명" if key == "설명" else "고정 댓글", foreground=COLORS["muted"]).grid(row=k, column=0, sticky="nw", padx=(0, 6))
             text = c[key] = scrolledtext.ScrolledText(more, height=h, width=70, wrap="word", font=(FONT, 9))
             text.insert("1.0", item[key])
             text.grid(row=k, column=1, sticky="w", pady=2)
             text.bind("<FocusOut>", lambda e, kk=key: self.save(c, kk))
-        toggle.config(command=lambda: (more.grid_remove(), toggle.config(text="설명·고정 댓글 ▸")) if more.winfo_ismapped()
-                      else (more.grid(row=4, column=0, columnspan=3, sticky="w"), toggle.config(text="설명·고정 댓글 ▾")))
+        toggle.config(command=lambda: (more.grid_remove(), toggle.config(text="설명·고정 댓글 보기 ▸")) if more.winfo_ismapped()
+                      else (more.grid(row=4, column=0, sticky="w"), toggle.config(text="설명·고정 댓글 접기 ▾")))
+
+        c["final"] = tk.Label(side, text="최종 썸네일 아직 없음\n\n'최종 만들기'를 누르세요", width=40, height=9, relief="groove",
+                              cursor="hand2")
+        c["final"].pack()
+        c["final"].bind("<Button-1>", lambda e: c["item"]["최종"] and view_image(self.win, c["item"]["최종"], f"{c['item']['num']}번 최종 썸네일"))
+        if ch["thumb_auto"]:
+            ttk.Button(side, text="최종 만들기 ▶", style="Primary.TButton", command=lambda: self.make(c, force=True)).pack(fill="x", pady=(6, 0))
+            ph = ttk.LabelFrame(side, text=" 실제 사진 ", padding=4)
+            ph.pack(fill="x", pady=(8, 0))
+            c["photo_note"] = ttk.Label(ph, foreground=COLORS["muted"], wraplength=self.FINAL)
+            c["photo_note"].pack(anchor="w")
+            row = ttk.Frame(ph)
+            row.pack(fill="x", pady=(4, 0))
+            for text, cmd in (("크게 보기", lambda: self.view_photo(c)), ("위치·크기", lambda: self.place_photo(c)),
+                              ("다른 사진 찾기", lambda: self.find_photos([c], force=True))):
+                ttk.Button(row, text=text, command=cmd).pack(side="left", padx=(0, 4))
+        else:
+            c["photo_note"] = ttk.Label(side)
+        c["err"] = ttk.Label(side, foreground=COLORS["accent"], wraplength=self.FINAL)
+        c["err"].pack(anchor="w", pady=(6, 0))
+        c["score"] = ttk.Label(side, justify="left", wraplength=self.FINAL)
+        c["score"].pack(anchor="w", pady=(4, 0))
         self.show_pics(c)
         self.show_final(c)
 
     def choices(self, parent, c, key, values, pick, orig=""):
-        """SEO의 후보(제목·썸네일 문구)와 원본을 한눈에 전부 보여주고 눌러서 고르기 + 직접 입력 칸. 고르면 바로 저장."""
+        """SEO 후보를 한눈에 전부, 그 아래 원본(따로 한 줄), 직접 입력. 눌러서 고르면 바로 저장되고 고른 줄은 진하게."""
         frame = ttk.Frame(parent)
-        labels = {}
-        if orig and orig not in values:  # 원본(예전 제목·썸네일 문구)도 고를 수 있게 맨 아래에
-            values = list(values) + [orig]
-            labels[len(values) - 1] = "   ← 원본"
         current = c["item"][key]
         var = c[key] = tk.StringVar(value=current)
-        choice = tk.StringVar(value=str(values.index(current)) if current in values else "own")
-        own = tk.StringVar(value="" if current in values else current)
-        width = max(360, self.win.winfo_screenwidth() - self.FINAL - 420)
-
+        opts = list(values) + ([orig] if orig and orig not in values else [])
+        choice = tk.StringVar(value=str(opts.index(current)) if current in opts else "own")
+        own = tk.StringVar(value="" if current in opts else current)
+        width = max(360, self.win.winfo_screenwidth() - self.FINAL - 460)
         limit = None
         if key == "썸네일문구":
             import thumbs
             limit = thumbs.max_lines(thumbs.load_template(c["ch"]))
 
-        def count(text):
+        def note(text):
             if key == "제목":
                 return f"  ({len(text)}자)"
             n = len([s for s in text.split("/") if s.strip()])
@@ -914,33 +931,52 @@ class PrepWindow:
             var.set(v)
             self.save(c, key)
 
-        for n, v in enumerate(values):
+        rows = {}
+
+        def option(n, v, tag, tag_style, at):
             row = ttk.Frame(frame)
-            row.grid(row=n, column=0, sticky="w")
-            ttk.Radiobutton(row, value=str(n), variable=choice, command=lambda v=v: pick_value(v)).pack(side="left", anchor="n")
-            text = v + count(v) + ("   ← SEO 추천" if n == pick else labels.get(n, ""))
-            lab = ttk.Label(row, text=text, wraplength=width, justify="left", cursor="hand2")
+            row.grid(row=at, column=0, sticky="w", pady=1)
+            ttk.Radiobutton(row, value=str(n), variable=choice, command=lambda: pick_value(v)).pack(side="left", anchor="n")
+            if tag:
+                ttk.Label(row, text=tag, style=tag_style, width=8).pack(side="left", anchor="n")
+            lab = ttk.Label(row, text=v + note(v), wraplength=width, justify="left", cursor="hand2", style="Opt.TLabel")
             lab.pack(side="left", anchor="w")
-            lab.bind("<Button-1>", lambda e, n=n, v=v: (choice.set(str(n)), pick_value(v)))
+            lab.bind("<Button-1>", lambda e: (choice.set(str(n)), pick_value(v)))
+            rows[str(n)] = lab
+
+        for n, v in enumerate(values):
+            option(n, v, "SEO 추천" if n == pick else f"SEO {n + 1}안", "Badge.TLabel" if n == pick else "Tag.TLabel", n)
+        at = len(values)
+        if len(opts) > len(values):  # 원본은 따로 떨어진 줄로
+            ttk.Separator(frame).grid(row=at, column=0, sticky="ew", pady=4)
+            option(len(values), orig, "원본", "Orig.TLabel", at + 1)
+            at += 2
         row = ttk.Frame(frame)
-        row.grid(row=len(values), column=0, sticky="w", pady=(2, 0))
-        ttk.Radiobutton(row, text="직접 입력", value="own", variable=choice,
+        row.grid(row=at, column=0, sticky="w", pady=(4, 0))
+        ttk.Radiobutton(row, value="own", variable=choice,
                         command=lambda: own.get().strip() and pick_value(own.get().strip())).pack(side="left")
+        ttk.Label(row, text="직접 입력", style="Tag.TLabel", width=8).pack(side="left")
         entry = ttk.Entry(row, textvariable=own, width=60 if key == "제목" else 40)
         entry.pack(side="left", padx=4)
-        size = ttk.Label(row, foreground=COLORS["muted"], text=count(own.get()) if own.get() else "")
+        size = ttk.Label(row, foreground=COLORS["muted"], text=note(own.get()) if own.get() else "")
         size.pack(side="left")
 
         def typed(e=None):
             choice.set("own")
             var.set(own.get().strip())
-            size.config(text=count(own.get().strip()) if own.get().strip() else "")
+            size.config(text=note(own.get().strip()) if own.get().strip() else "")
         entry.bind("<KeyRelease>", typed)
         for ev in ("<FocusOut>", "<Return>"):
             entry.bind(ev, lambda e: own.get().strip() and self.save(c, key))
         if key == "썸네일문구":
-            ttk.Label(frame, foreground=COLORS["muted"], text="  / 를 넣으면 거기서 줄이 바뀝니다 (예: 진짜 죽음은 / 등 뒤에 있었다)").grid(
-                row=len(values) + 1, column=0, sticky="w")
+            ttk.Label(frame, foreground=COLORS["muted"], text="/ 를 넣으면 거기서 줄이 바뀝니다 (예: 진짜 죽음은 / 등 뒤에 있었다)").grid(
+                row=at + 1, column=0, sticky="w", pady=(2, 0))
+
+        def mark(*_):  # 고른 줄은 진하게
+            for k, lab in rows.items():
+                lab.config(style="Picked.TLabel" if k == choice.get() else "Opt.TLabel")
+        choice.trace_add("write", mark)
+        mark()
         return frame
 
     def show_pics(self, c):

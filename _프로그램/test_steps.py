@@ -340,6 +340,25 @@ def test_excel_open_and_off_slot_time():
         assert fake.videos_db["vid1"]["status"]["publishAt"] == "2030-01-04T09:00:00Z"
 
 
+def test_chain_to_schedule():
+    """고정 창에서 '고정 다 했어요'로 넘어오면 다시 묻지 않고 예약, 진행 막대는 영상마다 (몇 개 중 몇 개)."""
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        steps.build_excel(ui)
+        steps.fill_all(ui)
+        ui.answer, ui.steps = False, []
+        ui.step = lambda done, total, what: ui.steps.append((done, total))
+        opened = []
+        saved, steps.open_tabs = steps.open_tabs, opened.extend
+        try:
+            steps.schedule_all(ui, confirmed=True)
+        finally:
+            steps.open_tabs = saved
+        assert opened and "studio.youtube.com" in opened[0]  # 회원 전용 영상 화면은 묻지 않고 열어 줌
+        assert not ui.asked and not any(r["상태"] == "댓글완료" for r in core.read_rows()), core.read_rows()  # 다 예약됨 (회원 영상은 직접 설정 안내)
+        assert ui.steps[-1][0] == ui.steps[-1][1] == 3, ui.steps  # 마지막은 3/3 (100%)
+
+
 def test_persona_fixes():
     """썸네일 없으면 2단계 점검에서 멈춤('없음'이면 통과), 할 일 없을 때 안내, 날짜만 적은 예약일시는 공개 시간으로."""
     with tempfile.TemporaryDirectory() as d:

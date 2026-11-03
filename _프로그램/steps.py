@@ -102,7 +102,14 @@ def _loop(ui, cfg, rows, todo, work):
                 _save(ui, rows)
                 raise Stop(f"{fails}번 연속 실패해서 멈췄습니다. 마지막 오류: {r['오류']}") from None
         _save(ui, rows)  # 영상 하나 끝날 때마다 저장 → 중간에 멈춰도 이어서 가능
+        step(ui, i, len(todo), r["채널"])
     return failed
+
+
+def step(ui, done, total, what=""):
+    """화면 진행 막대: 몇 개 중 몇 개 (%)."""
+    if hasattr(ui, "step"):
+        ui.step(done, total, what)
 
 
 def _report(ui, title, failed, skipped):
@@ -150,7 +157,7 @@ def status_summary(rows, cfg):
     elif core.MEMBER_TODO in states:
         nxt = "Studio에서 회원 전용 + 공개 예약 직접 설정 (엑셀 상태 '회원 설정 필요'인 영상) → 끝나면 다음 묶음"
     else:
-        nxt = "1. 준비 (SEO 넣기 → 썸네일 넣기, 영상은 Studio에 업로드) → 2. 자동 처리"
+        nxt = "SEO·그림 폴더를 이 창에 끌어다 놓기 → 준비 화면에서 '전부 만들고 올리기' (영상은 Studio에 초안으로)"
     return ("\n".join(lines) or "진행 중인 영상 없음") + f"\n▶ 다음 할 일: {nxt}"
 
 
@@ -161,7 +168,7 @@ def card_status(rows, has_videos=False):
     errors = sum(1 for r in rows if r["오류"])
     member, left = c[core.MEMBER_TODO], c[""] + c["정보완료"]
     text = {
-        "1": f"이번 묶음 영상 {len(rows)}개" if rows else "SEO 넣기 → 작업표 보고 썸네일 만들기 → 썸네일 넣기\n영상은 Studio에 업로드",
+        "1": f"이번 묶음 영상 {len(rows)}개" if rows else "SEO·그림 폴더를 이 창에 끌어다 놓기 → 준비 화면에서 고르고\n'전부 만들고 올리기' (영상은 Studio에 초안으로)",
         "2": (f"남은 {left}개" if left else "완료" if rows else "목록 → 제목 확인 → 제목·설명·썸네일·댓글")
              + (f" · 오류 {errors}" if errors else ""),
         "3": f"고정할 영상 {c['댓글완료']}개" if c["댓글완료"] else "탭을 열어 댓글 고정 (직접)",
@@ -535,6 +542,8 @@ def make_thumbnails(ui, rows, targets, force=False):
     ui.log(f"썸네일 {len(targets)}개를 만듭니다" + ("" if key or os.environ.get("ANTHROPIC_API_KEY")
                                                  else " (Claude API 키가 없어 실제 사진 없이, 강조는 마지막 줄)"))
 
+    done = []
+
     def one(r):
         try:
             r["썸네일"] = core.rel(thumbs.make(chans[r["채널"]], r, key, ui.log, force))
@@ -543,6 +552,8 @@ def make_thumbnails(ui, rows, targets, force=False):
         except Exception as e:
             r["오류"] = f"썸네일 만들기 실패: {e}"
             ui.log(f"  ✗ 썸네일: {Path(r['파일']).name}: {e}")
+        done.append(r)
+        step(ui, len(done), len(targets), "썸네일")
     import ai
     before = len(ai.USAGE)
     stamp = {r["파일"]: _mtime(r) for r in targets}
@@ -762,11 +773,12 @@ def thumb_test(ui):
 
 
 # ---------- 4. 예약 걸기 ----------
-def schedule_all(ui):
+def schedule_all(ui, confirmed=False):
+    """confirmed: 고정 창의 '고정 다 했어요'에서 넘어왔으면 다시 묻지 않음."""
     cfg, rows = core.load_config(), _load(ui)
     if not any(r["상태"] == "댓글완료" for r in rows):
         return ui.log("예약할 영상이 없습니다. '2. 자동 처리'와 '3. 댓글 고정'을 먼저 해주세요.")
-    if not ui.ask("고정(수창 채널은 광고 설문까지)을 모두 마치셨나요?\n예를 누르면 예약을 겁니다."):
+    if not confirmed and not ui.ask("고정(수창 채널은 광고 설문까지)을 모두 마치셨나요?\n예를 누르면 예약을 겁니다."):
         return
     failed, skipped, manual = [], [], []
     for ch in cfg["channels"]:
@@ -839,6 +851,6 @@ def schedule_all(ui):
     if manual:
         ui.alert("회원 전용으로 직접 설정할 영상:\n" + "\n".join(
             f"- [{r['채널']}] {r['제목']} → 회원 전용, {r['예약일시']} 전체 공개" for r in manual))
-        if ui.ask("이 영상들의 Studio 화면을 열까요?"):
+        if confirmed or ui.ask("이 영상들의 Studio 화면을 열까요?"):  # 자동으로 이어서 왔으면 묻지 않고 열어 줌
             open_tabs([f"https://studio.youtube.com/video/{r['영상ID']}/edit" for r in manual])
     _report(ui, "예약 걸기", failed, skipped)

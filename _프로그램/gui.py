@@ -85,7 +85,8 @@ class App:
         menu = tk.Menu(more, tearoff=0)
         for item in (("영상 폴더 열기", lambda: self.open_dir(core.VIDEO_DIR)), ("빈 묶음 폴더 만들기", self.make_batch),
                           ("완료 폴더 열기", lambda: self.open_dir(core.DONE_DIR)),
-                          ("사진·썸네일 넣기", self.add_thumbs),
+                          ("SEO 넣기 (파일 고르기)", self.import_seo), ("사진·썸네일 넣기", self.add_thumbs),
+                          ("작업표 열기", self.open_sheet),
                           ("엑셀로 열기", self.open_excel), ("작업 기록 보기", lambda: self.open_dir(core.LOG_DIR)), None,
                           ("목록(엑셀)만 다시 만들기", lambda: self.run(steps.build_excel)),
                           ("정보·댓글만 넣기", lambda: self.run(steps.fill_all)), None,
@@ -108,8 +109,7 @@ class App:
         self.cards, self.buttons = {}, {}
         self.step_buttons = []
         for key, title, actions in (
-                ("1", "준비", (("SEO 넣기", self.import_seo), ("준비 화면", self.open_prep),
-                              ("작업표 열기", self.open_sheet))),
+                ("1", "준비", (("준비 화면", self.open_prep),)),
                 ("2", "자동 처리", (("▶ 시작", self.auto_run),)),
                 ("3", "댓글 고정", (("탭 열기", self.pin_window),)),
                 ("4", "예약 걸기", (("실행", lambda: self.run(steps.schedule_all)),))):
@@ -240,7 +240,7 @@ class App:
 
     # --- 작업 실행 ---
     def set_busy(self, label):
-        self.busy = bool(label)
+        self.busy, self.busy_label = bool(label), label
         for b in self.step_buttons:
             b.state(["disabled"] if label else ["!disabled"])
         self.state.config(text=f"작업 중: {label}" if label else "대기 중")
@@ -250,6 +250,17 @@ class App:
         else:  # 쉬는 동안엔 빈 막대 (움직이는 조각이 남아 작업 중처럼 보이지 않게)
             self.progress.stop()
             self.progress.config(mode="determinate", value=0)
+
+    def step(self, done, total, what=""):
+        """작업 스레드에서 부른다: 진행 막대를 몇 개 중 몇 개(%)로."""
+        def show():
+            if not self.busy or not total:
+                return
+            pct = int(done * 100 / total)
+            self.progress.stop()
+            self.progress.config(mode="determinate", value=pct)
+            self.state.config(text=f"작업 중: {self.busy_label} — {what} {done}/{total} ({pct}%)".replace("  ", " "))
+        self.later(show)
 
     def run(self, fn, label=None):
         if self.busy:
@@ -311,9 +322,14 @@ class App:
         self.run(work, "썸네일 시험")
 
     def auto_run(self):
+        """2. 자동 처리 → (고정할 댓글이 있으면) 3. 고정 창 → '고정 다 했어요'를 누르면 4. 예약까지. 고정할 게 없으면 바로 4."""
         def work(app):
-            if self.steps.auto_all(app):
+            done = self.steps.auto_all(app)
+            if done:
                 app.later(app.pin_window)
+            elif done is False and any(r["상태"] == "댓글완료" for r in core.read_rows()):
+                app.log("고정할 댓글이 없어 바로 4. 예약 걸기로 넘어갑니다.")
+                self.steps.schedule_all(app, confirmed=True)
         self.run(work, "2. 자동 처리")
 
     def refresh_status(self):
@@ -721,8 +737,8 @@ class App:
             b.pack(fill="x", padx=10, pady=2)
             if len(targets) == 1:
                 click()  # 채널이 하나면 바로 연다 (여러 채널은 브라우저 프로필을 바꿔 가며 하나씩)
-        ttk.Button(win, text="고정을 다 했으면 → 4. 예약 걸기", command=lambda: (win.destroy(), self.run(
-            self.steps.schedule_all))).pack(fill="x", padx=10, pady=10)
+        ttk.Button(win, text="고정 다 했어요 → 4. 예약 걸기 ▶", command=lambda: (win.destroy(), self.run(
+            lambda app: self.steps.schedule_all(app, confirmed=True), "4. 예약 걸기"))).pack(fill="x", padx=10, pady=10)
         fit(win)
 
 
@@ -800,7 +816,15 @@ class PrepWindow:
         ttk.Label(top, justify="left", text=(
             "영상마다 후보 그림을 클릭해 고르고 제목·썸네일 문구(/ 로 줄 나눔)를 고치세요. 고친 것은 바로 저장됩니다.\n"
             "그림은 영상 칸에 끌어다 놓거나 '그림 넣기'. 실제 사진은 주제마다 자동으로 찾아 합성해 보여줍니다.")).pack(side="left")
-        ttk.Button(top, text="최종 썸네일 만들기 (전부)", command=self.make_all).pack(side="right")
+        ttk.Button(top, text="전부 만들고 올리기까지 ▶", style="Primary.TButton",
+                   command=lambda: self.make_all(then_upload=True)).pack(side="right")
+        bar = ttk.Frame(win, padding=(12, 0, 12, 2))  # 진행 막대는 따로 한 줄 (몇 개 중 몇 개, %)
+        bar.pack(fill="x")
+        self.pbar = ttk.Progressbar(bar, length=360, mode="determinate", maximum=100)
+        self.pbar.pack(side="left")
+        self.ptext = ttk.Label(bar, foreground=COLORS["muted"], text="")
+        self.ptext.pack(side="left", padx=8)
+        self.tasks = {}  # 진행 중인 일: {이름: [끝난 수, 전체 수]}
         self.only = tk.BooleanVar(value=getattr(app, "prep_only", True))
         ttk.Checkbutton(top, text="그림 넣은 영상만 보기", variable=self.only,
                         command=lambda: (setattr(app, "prep_only", self.only.get()), app.open_prep(again=True))).pack(side="right", padx=8)
@@ -1180,9 +1204,14 @@ class PrepWindow:
         return names[i] if i is not None and i < len(names) else None
 
     # --- 실제 사진·최종 썸네일 (작업 스레드) ---
-    def _background(self, cards, job, label):
+    def _background(self, cards, job, label, done=None):
+        """cards마다 job을 4개씩 함께. 위쪽 진행 막대에 몇 개 중 몇 개(%). 다 끝나면 done(실패한 카드들)."""
+        self.tasks.setdefault(label, [0, 0])[1] += len(cards)
+        self.show_progress()
+
         def work():
             from concurrent.futures import ThreadPoolExecutor
+            failed = []
 
             def one(c):
                 err = ""
@@ -1190,12 +1219,35 @@ class PrepWindow:
                     job(c)
                 except Exception as e:
                     err = f"✗ {label}: {e}"
+                    failed.append(c)
                     self.app.log(f"  ✗ [{c['ch']['name']}] {c['item']['num']}번 {label}: {e}")
-                self.app.later(lambda: self.win.winfo_exists() and (self.refresh(c), c["err"].config(text=err)))
+
+                def after():
+                    if self.win.winfo_exists():
+                        self.refresh(c)
+                        c["err"].config(text=err)
+                        self.tasks[label][0] += 1
+                        self.show_progress()
+                self.app.later(after)
             with ThreadPoolExecutor(4) as pool:
                 list(pool.map(one, cards))
             self.app.log(f"{label}: 끝났습니다.")
+            if done:
+                self.app.later(lambda: done(failed))
         threading.Thread(target=work, daemon=True).start()
+
+    def show_progress(self):
+        """위쪽 진행 막대: 진행 중인 일들 합쳐서 몇 개 중 몇 개(%). 다 끝나면 비움."""
+        tasks = {k: v for k, v in self.tasks.items() if v[1]}
+        total, done = sum(t for _, t in tasks.values()), sum(min(d, t) for d, t in tasks.values())
+        if not total or done >= total:
+            self.tasks.clear()
+            self.pbar.config(value=100 if total else 0)
+            self.ptext.config(text="다 됐습니다" if total else "")
+            return
+        pct = int(done * 100 / total)
+        self.pbar.config(value=pct)
+        self.ptext.config(text=" · ".join(f"{k} {d}/{t}" for k, (d, t) in tasks.items()) + f"  ({pct}%)")
 
     def find_photos(self, cards=None, force=False):
         import thumbs
@@ -1221,19 +1273,32 @@ class PrepWindow:
     def make(self, c, force=False):
         self.make_all([c], force)
 
-    def make_all(self, cards=None, force=False):
+    def make_all(self, cards=None, force=False, then_upload=False):
         import thumbs
         for c in self.cards.values():  # 아직 칸에서 안 빠져나온 고친 값도 저장
             for k in ("제목", "썸네일문구"):
                 self.save(c, k)
         todo = [c for c in (cards or self.cards.values()) if c["ch"]["thumb_auto"] and c["item"]["선택"]]
         if not todo:
+            if then_upload:  # 만들 썸네일이 없으면(완성 썸네일을 넣는 채널 등) 바로 올리기로
+                self.app.root.lift()
+                return self.app.auto_run()
             return messagebox.showinfo("최종 썸네일", "후보 그림이 있는 영상이 없습니다.", parent=self.win)
         key = self.cfg.get("claude_key", "")
         self.app.log(f"최종 썸네일을 만듭니다: {len(todo)}개")
+
+        def next_step(failed):  # 전부 만들었으면 2. 자동 처리 → 3. 고정 → 4. 예약으로 이어서
+            if not then_upload:
+                return
+            if failed:
+                return messagebox.showinfo("최종 썸네일", f"{len(failed)}개를 만들지 못해 올리기는 멈췄습니다. 빨간 글씨를 보고 고친 뒤 다시 눌러주세요.",
+                                           parent=self.win)
+            self.app.log("최종 썸네일을 다 만들었습니다 → 2. 자동 처리로 넘어갑니다.")
+            self.app.root.lift()
+            self.app.auto_run()
         self._background(todo, lambda c: thumbs.make_for(
             c["ch"], c["folder"], c["item"]["num"], c["item"]["썸네일문구"], c["item"]["제목"], c["item"]["설명"],
-            key, self.app.log, force), "최종 썸네일")
+            key, self.app.log, force), "최종 썸네일", next_step)
 
 
 def selectable(parent, text, width_px, font=None):

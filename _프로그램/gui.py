@@ -934,11 +934,6 @@ class PrepWindow:
 
         rows = {}
 
-        def copy(v):
-            self.win.clipboard_clear()
-            self.win.clipboard_append(v)
-            self.app.log(f"복사했습니다: {v[:40]}")
-
         def rewrite(v):  # 이 문구를 직접 입력 칸에 넣고 바로 고치게
             own.set(v)
             typed()
@@ -952,12 +947,10 @@ class PrepWindow:
             ttk.Radiobutton(row, value=str(n), variable=choice, command=lambda: pick_value(v)).pack(side="left", anchor="n")
             if tag:
                 ttk.Label(row, text=tag, style=tag_style, width=8).pack(side="left", anchor="n")
-            lab = ttk.Label(row, text=v + note(v), wraplength=width, justify="left", cursor="hand2", style="Opt.TLabel")
+            lab = selectable(row, v + note(v), width)  # 마우스로 끌어 고르고 Ctrl+C·오른쪽 클릭 → 복사
             lab.pack(side="left", anchor="w")
-            lab.bind("<Button-1>", lambda e: (choice.set(str(n)), pick_value(v)))
-            lab.bind("<Button-3>", lambda e: copy(v))  # 오른쪽 클릭으로도 복사
+            lab.bind("<ButtonRelease-1>", lambda e: None if lab.tag_ranges("sel") else (choice.set(str(n)), pick_value(v)))
             ttk.Button(row, text="고쳐 쓰기", style="Small.TButton", command=lambda: rewrite(v)).pack(side="left", padx=(8, 0), anchor="n")
-            ttk.Button(row, text="복사", style="Small.TButton", command=lambda: copy(v)).pack(side="left", padx=(4, 0), anchor="n")
             rows[str(n)] = lab
 
         for n, v in enumerate(values):
@@ -992,7 +985,8 @@ class PrepWindow:
 
         def mark(*_):  # 고른 줄은 진하게
             for k, lab in rows.items():
-                lab.config(style="Picked.TLabel" if k == choice.get() else "Opt.TLabel")
+                picked = k == choice.get()
+                lab.config(font=(FONT, 10, "bold") if picked else (FONT, 10), foreground="#0B4F9C" if picked else "black")
         choice.trace_add("write", mark)
         mark()
         return frame
@@ -1249,6 +1243,22 @@ class PrepWindow:
         self._background(todo, lambda c: thumbs.make_for(
             c["ch"], c["folder"], c["item"]["num"], c["item"]["썸네일문구"], c["item"]["제목"], c["item"]["설명"],
             key, self.app.log, force), "최종 썸네일")
+
+
+def selectable(parent, text, width_px, font=None):
+    """보기만 하는 글자인데 마우스로 끌어 고르고 복사할 수 있는 칸 (테두리 없이 글자처럼 보임, 자동 줄바꿈)."""
+    font = font or (FONT, 10)
+    f = tkfont.Font(font=font)
+    chars = max(10, width_px // max(1, f.measure("0")))
+    w = tk.Text(parent, wrap="word", font=font, relief="flat", borderwidth=0, highlightthickness=0, cursor="xterm",
+                width=chars, height=1, padx=0, pady=1,
+                background=ttk.Style().lookup("TFrame", "background") or parent.winfo_toplevel().cget("background"))
+    w.insert("1.0", text)
+    w.config(state="disabled")  # 고칠 수는 없고 고르기·복사만
+    px = chars * f.measure("0")  # 실제 칸 너비
+    bold = tkfont.Font(font=(font[0], font[1], "bold")).measure(text)  # 고르면 굵게 바뀌니 굵은 글자 기준
+    w.config(height=max(1, -(-bold // max(1, px))))  # 줄바꿈될 만큼 높이
+    return w
 
 
 def view_image(parent, path, title, note=""):

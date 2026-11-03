@@ -370,8 +370,11 @@ def auto_all(ui):
     build_excel(ui)
     rows = core.read_rows()
     new = [r for r in rows if r["상태"] == ""]
+    ask = [r for r in new if not settled(r)]  # 준비 화면에서 제목·최종 썸네일까지 정한 영상은 다시 묻지 않음
+    if len(ask) < len(new):
+        ui.log(f"준비 화면에서 이미 정한 {len(new) - len(ask)}개는 제목을 다시 묻지 않습니다.")
     if new:  # 썸네일을 보며 제목(과 썸네일 문구)을 고르는 창. 처음 값은 SEO 추천
-        picked = ui.review_titles(new)
+        picked = ui.review_titles(ask) if ask else {}
         if picked is None:
             return ui.log("제목 확인을 취소했습니다. '2. 자동 처리'를 다시 누르면 이어서 합니다.")
         changed = [(r, k, v) for r in new for k, v in picked.get(r["파일"], {}).items() if r[k] != v]
@@ -515,6 +518,15 @@ def update_ctr(ui):
                 ui.log(f"[{ch['name']}] (썸네일 클릭률을 못 받았습니다: {why})")
 
 
+def settled(r):
+    """준비 화면에서 제목·썸네일 문구를 정하고 최종 썸네일까지 만든 영상인지 (그러면 자동 처리 때 다시 묻지 않음)."""
+    num = core.row_num(r)
+    if num is None or not r["파일"]:
+        return False
+    folder = (core.VIDEO_DIR / r["파일"]).parent
+    return (folder / f"{num}_자동썸네일.jpg").exists() and bool(core.load_prep(folder).get(str(num), {}).get("선택"))
+
+
 def make_thumbnails(ui, rows, targets, force=False):
     """썸네일 자동 만들기 채널의 영상들. Claude 답을 기다리는 시간이 길어서 4개씩 함께 만든다."""
     import thumbs
@@ -576,6 +588,7 @@ def prep_items(ch):
         final = folder / f"{e['num']}_자동썸네일.jpg"
         photo = folder / core.PHOTOS / f"{e['num']}.jpg"
         out.append({"num": e["num"], "orig": e["orig"], "titles": e["titles"], "thumb_texts": texts,
+                    "title_pick": e.get("title_pick", 0), "thumb_pick": e.get("thumb_pick", 0),
                     "제목": p.get("제목") or e["title"],
                     "썸네일문구": p.get("썸네일문구") or (texts[e.get("thumb_pick", 0)] if texts else ""),
                     "설명": p.get("설명") or e["desc"], "고정댓글": p.get("고정댓글") or e["comment"],
@@ -660,15 +673,20 @@ def guess_channel_name(path):
 
 
 def add_candidates(folder, num, paths):
-    """후보 그림을 채널 폴더/재료/<순번>/ 에 넣는다 (이름이 같으면 뒤에 번호)."""
+    """후보 그림을 채널 폴더/재료/<순번>/ 에 넣는다 (이름이 같으면 뒤에 번호, 내용까지 같은 그림은 다시 넣지 않음)."""
     dest = Path(folder) / core.MATERIAL / str(num)
     dest.mkdir(parents=True, exist_ok=True)
+    have = {core.file_hash(q): q for q in dest.iterdir() if q.is_file()}
     out = []
     for p in map(Path, paths):
+        if (h := core.file_hash(p)) in have:  # 이미 넣은 그림 (같은 폴더를 두 번 끌어다 놓은 경우)
+            out.append(have[h])
+            continue
         target, n = dest / p.name, 2
         while target.exists():
             target, n = dest / f"{p.stem}_{n}{p.suffix}", n + 1
         shutil.copy2(p, target)
+        have[h] = target
         out.append(target)
     return out
 

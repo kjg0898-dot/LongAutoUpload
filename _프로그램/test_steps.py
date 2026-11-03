@@ -425,6 +425,19 @@ def test_auto_all_and_no_title_template():
         assert [r["상태"] for r in core.read_rows()] == [""] * 3 and not fake.updates
 
 
+def test_no_double_title_check():
+    """준비 화면에서 제목·그림을 정하고 최종 썸네일까지 만든 영상은 2. 자동 처리 때 제목을 다시 묻지 않는다."""
+    from PIL import Image
+    with tempfile.TemporaryDirectory() as d:
+        fake, ui = setup(d), UI()
+        folder = core.VIDEO_DIR / "b" / "명언"
+        Image.new("RGB", (1280, 720), "gray").save(folder / "1_자동썸네일.jpg")
+        core.save_prep(folder, {"1": {"선택": "재료/1/a.png", "제목": "준비 화면에서 고른 제목"}})
+        steps.auto_all(ui)
+        assert ui.reviewed == ["명언 2", "명언 3"], ui.reviewed
+        assert any("이미 정한 1개" in m for m in ui.logs)
+
+
 def test_relogin_when_expired():
     with tempfile.TemporaryDirectory() as d:
         fake, ui = setup(d), UI()
@@ -1051,6 +1064,10 @@ def test_prep_flow():
             steps.add_candidates(folder, n, [f for f in files if steps.drop_number(f) == n])
         _, items = steps.prep_items(ch)
         assert [(i["num"], len(i["후보"])) for i in items] == [(1, 2), (2, 1)], items
+        steps.add_candidates(folder, 1, [f for f in files if steps.drop_number(f) == 1])  # 같은 그림을 또 넣어도
+        import shutil as sh
+        sh.copy(files[0], folder / core.MATERIAL / "1" / "이름만 다른 같은 그림.png")  # 이름만 다른 같은 그림도
+        assert len(core.candidates(folder, 1)) == 2 and len(list((folder / core.MATERIAL / "1").iterdir())) == 3  # 화면엔 하나씩
         assert items[0]["제목"] == "첫째 제목 1" and items[0]["썸네일문구"] == "문구 1 / 둘째 줄"
         assert items[0]["그림요청"] == "장면 1, 텍스트 없음" and items[0]["고정댓글"] == "댓글 1"  # 그림 프롬프트 복사용
         steps.remember(folder, 1, 선택=core.rel(items[0]["후보"][1]).split("/", 2)[2], 제목="고른 제목", 썸네일문구="고친 / 문구")

@@ -442,7 +442,18 @@ def candidates(folder, num):
         n = int(parts[0]) if len(parts) > 1 and parts[0].isdigit() else next(iter(_nums(p)), None) if len(_nums(p)) == 1 else None
         if n == num:
             out.append(p)
-    return out
+    seen, unique = set(), []
+    for p in out:  # 같은 그림을 두 번 넣었으면 하나만 (이름은 달라도 내용이 같으면)
+        h = file_hash(p)
+        if h not in seen:
+            seen.add(h)
+            unique.append(p)
+    return unique
+
+
+def file_hash(path):
+    import hashlib
+    return hashlib.md5(Path(path).read_bytes()).hexdigest()
 
 
 def material_for(folder, num):

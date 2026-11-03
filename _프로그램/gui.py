@@ -798,6 +798,7 @@ class PrepWindow:
         self.tabs = ttk.Notebook(win)
         self.tabs.pack(fill="both", expand=True, padx=8, pady=4)
         self.cards, self.images, self.canvases = {}, [], []
+        self.pending = set()  # 실제 사진을 찾거나 자리를 추천받는 중인 영상: 끝날 때까지 미리보기 대신 '추천 중…' (한 번만 그리게)
         for ch in self.cfg["channels"]:
             folder, items = self.app.steps.prep_items(ch)
             if not items:
@@ -866,14 +867,10 @@ class PrepWindow:
         c["err"].pack(anchor="w")
         c["score"] = ttk.Label(side, justify="left", wraplength=self.FINAL)
         c["score"].pack(anchor="w")
-        for j, (key, label, values) in enumerate((("제목", "제목", item["titles"]),
-                                                   ("썸네일문구", "썸네일 문구", item["thumb_texts"])), 1):
-            ttk.Label(box, text=label, foreground=COLORS["muted"]).grid(row=j, column=0, sticky="w", padx=(0, 6))
-            var = c[key] = tk.StringVar(value=item[key])
-            combo = ttk.Combobox(box, textvariable=var, values=values, width=52)
-            combo.grid(row=j, column=1, sticky="w", pady=2)
-            for ev in ("<<ComboboxSelected>>", "<FocusOut>", "<Return>"):
-                combo.bind(ev, lambda e, k=key: self.save(c, k))
+        for j, (key, label, values, pick) in enumerate((("제목", "제목", item["titles"], item.get("title_pick", 0)),
+                                                         ("썸네일문구", "썸네일 문구", item["thumb_texts"], item.get("thumb_pick", 0))), 1):
+            ttk.Label(box, text=label, foreground=COLORS["muted"]).grid(row=j, column=0, sticky="nw", padx=(0, 6), pady=(4, 0))
+            self.choices(box, c, key, values, pick).grid(row=j, column=1, sticky="w", pady=2)
         more = ttk.Frame(box)
         toggle = ttk.Button(box, text="설명·고정 댓글 ▸")
         toggle.grid(row=3, column=1, sticky="w", pady=(4, 0))
@@ -888,6 +885,51 @@ class PrepWindow:
         self.show_pics(c)
         self.show_final(c)
 
+    def choices(self, parent, c, key, values, pick):
+        """SEO의 후보(제목·썸네일 문구)를 한눈에 전부 보여주고 눌러서 고르기 + 직접 입력 칸. 고르면 바로 저장."""
+        frame = ttk.Frame(parent)
+        current = c["item"][key]
+        var = c[key] = tk.StringVar(value=current)
+        choice = tk.StringVar(value=str(values.index(current)) if current in values else "own")
+        own = tk.StringVar(value="" if current in values else current)
+        width = max(360, self.win.winfo_screenwidth() - self.FINAL - 420)
+
+        def count(text):
+            return f"  ({len(text)}자)" if key == "제목" else ""
+
+        def pick_value(v):
+            var.set(v)
+            self.save(c, key)
+
+        for n, v in enumerate(values):
+            row = ttk.Frame(frame)
+            row.grid(row=n, column=0, sticky="w")
+            ttk.Radiobutton(row, value=str(n), variable=choice, command=lambda v=v: pick_value(v)).pack(side="left", anchor="n")
+            text = v + count(v) + ("   ← SEO 추천" if n == pick else "")
+            lab = ttk.Label(row, text=text, wraplength=width, justify="left", cursor="hand2")
+            lab.pack(side="left", anchor="w")
+            lab.bind("<Button-1>", lambda e, n=n, v=v: (choice.set(str(n)), pick_value(v)))
+        row = ttk.Frame(frame)
+        row.grid(row=len(values), column=0, sticky="w", pady=(2, 0))
+        ttk.Radiobutton(row, text="직접 입력", value="own", variable=choice,
+                        command=lambda: own.get().strip() and pick_value(own.get().strip())).pack(side="left")
+        entry = ttk.Entry(row, textvariable=own, width=60 if key == "제목" else 40)
+        entry.pack(side="left", padx=4)
+        size = ttk.Label(row, foreground=COLORS["muted"], text=count(own.get()) if own.get() else "")
+        size.pack(side="left")
+
+        def typed(e=None):
+            choice.set("own")
+            var.set(own.get().strip())
+            size.config(text=count(own.get().strip()) if own.get().strip() else "")
+        entry.bind("<KeyRelease>", typed)
+        for ev in ("<FocusOut>", "<Return>"):
+            entry.bind(ev, lambda e: own.get().strip() and self.save(c, key))
+        if key == "썸네일문구":
+            ttk.Label(frame, foreground=COLORS["muted"], text="  / 를 넣으면 거기서 줄이 바뀝니다 (예: 진짜 죽음은 / 등 뒤에 있었다)").grid(
+                row=len(values) + 1, column=0, sticky="w")
+        return frame
+
     def show_pics(self, c):
         """후보 그림들 (실제 사진이 있으면 합성한 미리보기). 클릭하면 고름."""
         for w in c["pics"].winfo_children():
@@ -897,13 +939,16 @@ class PrepWindow:
             if not item["후보"]:
                 ttk.Label(c["pics"], foreground=COLORS["muted"], text="후보 그림이 없습니다 — 이 칸에 끌어다 놓거나 '그림 넣기'").grid(
                     row=0, column=0, padx=(0, 8))
+            waiting = self.key(c) in self.pending
             for k, path in enumerate(item["후보"]):  # 4개씩 한 줄
                 chosen = item["선택"] and Path(path) == Path(item["선택"])
-                lab = tk.Label(c["pics"], text="…", width=20, height=5, highlightthickness=4, cursor="hand2",
+                lab = tk.Label(c["pics"], text="실제 사진 자리\n추천 중…" if waiting else "…", width=20, height=5,
+                               highlightthickness=4, cursor="hand2", foreground=COLORS["muted"],
                                highlightbackground=COLORS["accent"] if chosen else COLORS["card"])
                 lab.grid(row=k // 4, column=k % 4, padx=2, pady=2)
                 lab.bind("<Button-1>", lambda e, p=path: self.choose(c, p))
-                self.render(lab, c, path)
+                if not waiting:
+                    self.render(lab, c, path)
             n = len(item["후보"])
             ttk.Button(c["pics"], text="그림 넣기", command=lambda: self.add(c)).grid(
                 row=max(n - 1, 0) // 4, column=4 if n else 1, padx=6, sticky="w")
@@ -912,8 +957,26 @@ class PrepWindow:
                     row=max(n - 1, 0) // 4 + 1, column=4 if n else 1, padx=6, sticky="w")
         photo = item["실제사진"]
         note = json.loads((photo.with_suffix(".json")).read_text("utf-8")).get("credit", "") if photo and photo.with_suffix(".json").exists() else ""
-        c["photo_note"].config(text=f"실제 사진: {note}" if photo else ("실제 사진: 아직 (API 키가 있으면 자동으로 찾음)"
-                                                                    if c["ch"]["thumb_auto"] else ""))
+        c["photo_note"].config(text=("실제 사진: 찾는 중…" if self.key(c) in self.pending and not photo else
+                                     f"실제 사진: {note}" if photo else
+                                     "실제 사진: 아직 (API 키가 있으면 자동으로 찾음)" if c["ch"]["thumb_auto"] else ""))
+
+    @staticmethod
+    def key(c):
+        return str(c["folder"]), c["item"]["num"]
+
+    def wait_for(self, cards, job, label):
+        """cards를 '추천 중…'으로 두고 job을 돌린 뒤, 끝나면 한 번만 다시 그린다."""
+        for c in cards:
+            self.pending.add(self.key(c))
+            self.show_pics(c)
+
+        def run(c):
+            try:
+                job(c)
+            finally:
+                self.pending.discard(self.key(c))
+        self._background(cards, run, label)
 
     def copy_prompt(self, c):
         """SEO의 썸네일 그림 프롬프트 + 글자·채널 마크 자리를 비워 두라는 구도 안내 → 클립보드 (Gemini 등에 붙여넣기)."""
@@ -981,24 +1044,34 @@ class PrepWindow:
             return messagebox.showinfo("사진 위치", "후보 그림과 실제 사진이 있어야 위치를 정할 수 있습니다.", parent=self.win)
         PhotoPlacer(self, c)
 
-    def refresh(self, c):
+    def refresh(self, c, draw=True):
         _, items = self.app.steps.prep_items(c["ch"])
         c["item"] = next((i for i in items if i["num"] == c["item"]["num"]), c["item"])
-        self.show_pics(c)
-        self.show_final(c)
+        if draw:
+            self.show_pics(c)
+            self.show_final(c)
 
     # --- 고르기·저장·넣기 ---
     def choose(self, c, path):
         self.app.steps.remember(c["folder"], c["item"]["num"], 선택=str(Path(path).relative_to(c["folder"])))
-        self.refresh(c)
-        self.recommend([c], again=True)  # 배경이 바뀌었으니 추천 자리도 새로 (직접 옮긴 자리는 그대로)
+        self.refresh(c, draw=False)
+        item = c["item"]
+        if c["ch"]["thumb_auto"] and item["실제사진"] and not item["사진빼기"] and (not item["사진자리"] or self.auto_box(c)):
+            self.recommend([c], again=True)  # 배경이 바뀌었으니 추천 자리도 새로 (끝나면 한 번에 그림)
+        else:  # 직접 옮긴 자리는 그대로
+            self.show_pics(c)
+            self.show_final(c)
+
+    def auto_box(self, c):
+        return core.load_prep(c["folder"]).get(str(c["item"]["num"]), {}).get("사진자리_추천", False)
 
     def recommend(self, cards=None, again=False):
         """실제 사진 추천 자리를 정해 둔다 (아직 없거나, again이면 프로그램이 정한 자리만 새로). 직접 옮긴 자리는 건드리지 않음."""
         todo = [c for c in (cards or self.cards.values()) if c["ch"]["thumb_auto"] and c["item"]["선택"] and c["item"]["실제사진"]
                 and not c["item"]["사진빼기"] and (again or not c["item"]["사진자리"])]
+        todo = [c for c in todo if self.key(c) not in self.pending]  # 이미 찾는 중이면 그 일이 끝나며 추천까지 함
         if todo:
-            self._background(todo, lambda c: self.recommend_one(c, again), "사진 자리 추천")
+            self.wait_for(todo, lambda c: self.recommend_one(c, again), "사진 자리 추천")
 
     def recommend_one(self, c, again=False):
         import thumbs
@@ -1091,7 +1164,7 @@ class PrepWindow:
                     self.recommend_one(c, again=force)  # 찾은 사진의 추천 자리
                 finally:
                     FINDING.discard((c["folder"], c["item"]["num"]))
-            self._background(todo, find, "실제 사진 찾기")
+            self.wait_for(todo, find, "실제 사진 찾기")
 
     def make(self, c, force=False):
         self.make_all([c], force)
@@ -1237,7 +1310,7 @@ class PhotoPlacer:
                 if had_final:
                     item = c["item"]
                     thumbs.make_for(c["ch"], c["folder"], item["num"], item["썸네일문구"], item["제목"], item["설명"], key, prep.app.log)
-            prep._background([c], job, "사진 자리 추천")
+            prep.wait_for([c], job, "사진 자리 추천")
         elif had_final:  # 최종이 있었으면 사진만 옮겨 다시 만든다 (글자 디자인은 그대로)
             self.prep.make(c)
 
